@@ -258,7 +258,7 @@ class PersistentShell(
             cmd.add("--native-offload=${NativeOffloadServer.socketName}:${handlers.joinToString(",")}")
         }
 
-        cmd.add("/bin/sh")
+        cmd.add("/bin/bash")
 
         val debugOffload = com.openminis.app.BuildConfig.DEV_TOOLS
 

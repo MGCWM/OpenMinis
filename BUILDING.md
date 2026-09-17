@@ -176,7 +176,7 @@ image.
 
 ```sh
 ./deps/build_proot.sh              # → assets/proot-aarch64, jniLibs/arm64-v8a/*.so
-./scripts/prepare_android_sandbox.sh   # → assets/alpine-minirootfs.tar.gz
+./scripts/prepare_android_sandbox.sh   # → assets/ubuntu-base.tar.gz
 ./deps/build_rclone_android.sh     # → deps/build/rclone/rclone.aar
 mkdir -p src/android/app/libs && cp deps/build/rclone/rclone.aar src/android/app/libs/
 ```
@@ -200,8 +200,8 @@ mkdir -p src/android/app/libs && cp deps/build/rclone/rclone.aar src/android/app
   Artifacts are **not** byte-identical across NDK releases; the loader's code
   differs between toolchain generations. Functionally equivalent — don't expect
   checksums to match someone else's build.
-- **`prepare_android_sandbox.sh`** downloads the Alpine aarch64 minirootfs into
-  `assets/`.
+- **`prepare_android_sandbox.sh`** downloads Ubuntu 24.04 arm64 `ubuntu-base` into
+  `assets/ubuntu-base.tar.gz`.
 - **`build_rclone_android.sh`** binds rclone with gomobile into an `.aar` for
   the backup feature's remote destinations. It needs `ANDROID_NDK_HOME` (or
   `ANDROID_HOME`) set, and it writes to `deps/build/rclone/`; Gradle reads the

@@ -52,7 +52,9 @@ fun interface NativeOffloadHandler {
 
 object NativeOffloadServer {
     private const val TAG = "NativeOffloadServer"
-    private const val SOCKET_NAME = "native-offload"
+    // Distinct from official OpenMinis ("native-offload") so both apps can
+    // bind an abstract LocalServerSocket on the same device.
+    private const val SOCKET_NAME = "native-offload-linux"
     private const val MAGIC_REQ = 0x46464F4E  // 'N' 'O' 'F' 'F' little-endian
     private const val MAGIC_RSP = 0x52464F4E  // 'N' 'O' 'F' 'R'
     private const val VERSION = 1

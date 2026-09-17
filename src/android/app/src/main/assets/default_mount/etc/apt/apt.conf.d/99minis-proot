@@ -1,0 +1,5 @@
+// PRoot fake-root cannot drop privileges to the `_apt` sandbox user.
+APT::Sandbox::User "root";
+Dpkg::Use-Pty "false";
+DPkg::Options { "--force-confdef"; "--force-confold"; };
+Acquire::Languages "none";

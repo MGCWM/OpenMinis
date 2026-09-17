@@ -470,7 +470,7 @@ class TerminalSession(private val context: Context) {
         cmd.add("--fake-netlink")
 
         // Login + interactive so /etc/profile is sourced (readline, history, color aliases).
-        cmd.add("/bin/sh")
+        cmd.add("/bin/bash")
         cmd.add("-l")
         cmd.add("-i")
         return cmd

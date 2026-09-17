@@ -12,7 +12,7 @@ import java.net.ServerSocket
 import java.net.Socket
 
 /**
- * Debug-only JSON-RPC 2.0 server on port 8321.
+ * Debug-only JSON-RPC 2.0 server on port 5322.
  * Listens on all interfaces (0.0.0.0) so it's reachable from the local network for debugging.
  * Mirrors the iOS DebugServer for parity with the debug-server CLI skill.
  *
@@ -20,7 +20,7 @@ import java.net.Socket
  */
 class DebugServer(
     private val context: Context,
-    private val port: Int = 5321,
+    private val port: Int = 5322,
 ) {
     companion object {
         private const val TAG = "DebugServer"
