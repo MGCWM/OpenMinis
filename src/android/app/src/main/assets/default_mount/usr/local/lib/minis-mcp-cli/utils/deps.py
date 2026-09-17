@@ -39,11 +39,11 @@ def _run(cmd):
 
 # command-name -> install command(s) to try in order.
 _RESOLVERS = {
-    "npx": ["apk add --quiet nodejs npm"],
-    "node": ["apk add --quiet nodejs npm"],
-    "npm": ["apk add --quiet nodejs npm"],
-    "python3": ["apk add --quiet python3 py3-pip"],
-    "pip": ["apk add --quiet python3 py3-pip"],
+    "npx": ["apt-get install -y nodejs npm"],
+    "node": ["apt-get install -y nodejs npm"],
+    "npm": ["apt-get install -y nodejs npm"],
+    "python3": ["apt-get install -y python3 python3-pip"],
+    "pip": ["apt-get install -y python3 python3-pip"],
     "uvx": ["pip install --quiet uv", "pip install --quiet --break-system-packages uv"],
     "uv": ["pip install --quiet uv", "pip install --quiet --break-system-packages uv"],
 }

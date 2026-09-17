@@ -17,7 +17,7 @@ import java.net.SocketTimeoutException
 
 /**
  * minis-debug — DEBUG-ONLY CLI wrapper for the local DebugServer JSON-RPC
- * endpoint at 127.0.0.1:5321.
+ * endpoint at 127.0.0.1:5322.
  *
  * Lets a user (or agent) in the PRoot shell drive the in-app debug RPC
  * without hand-rolling curl + JSON. Each subcommand maps to one RPC
@@ -69,7 +69,7 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
         } catch (e: ConnectionRefused) {
             val body = JSONObject()
                 .put("error", "debug_server_unreachable")
-                .put("message", "Debug server not running on 127.0.0.1:5321. Is this a debug build?")
+                .put("message", "Debug server not running on 127.0.0.1:5322. Is this a debug build?")
                 .toString()
             NativeOffloadResult(1, OffloadOutput.formatBody(body, args) + "\n")
         } catch (e: SocketTimeoutException) {
@@ -284,7 +284,7 @@ class DebugOffloadHandler(@Suppress("UNUSED_PARAMETER") context: Context) : Nati
 
     companion object {
         private const val TAG = "DebugOffload"
-        private const val DEBUG_SERVER_PORT = 5321
+        private const val DEBUG_SERVER_PORT = 5322
         private const val TIMEOUT_MS = 30_000
 
         /**

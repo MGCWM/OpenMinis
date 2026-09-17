@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Minis</string>
+    <string name="app_name">Minis Linux</string>
     <string name="new_chat">新对话</string>
     <string name="settings">设置</string>
     <string name="providers">AI 服务商</string>
@@ -276,7 +276,7 @@
     <string name="settings_env_vars">环境变量</string>
     <string name="settings_env_vars_subtitle">注入到沙箱内的变量</string>
     <string name="settings_section_storage">存储</string>
-    <string name="settings_storage_subtitle">管理 Alpine Linux rootfs 并浏览文件</string>
+    <string name="settings_storage_subtitle">管理 Ubuntu rootfs 并浏览文件</string>
     <string name="settings_section_permissions">权限</string>
     <string name="settings_permissions_subtitle">控制 Agent 对隐私敏感功能的访问</string>
     <string name="settings_section_logs">日志</string>
@@ -713,6 +713,29 @@
     <string name="perm_shizuku_section_footer">android-shizuku-cli 通过 Shizuku 服务调用 Android 高权限 API(安装应用、settings put、强制停止等)。Shizuku 由无线 ADB 或 root 启动。下方两项都需配置。</string>
     <string name="perm_a11y_cli_description">让 Agent 读取屏幕、点击、输入、监听事件</string>
     <string name="perm_shizuku_cli_description">通过 Shizuku 调用 Android 高权限 API</string>
+    <string name="perm_tool_su_cli">android-su</string>
+    <string name="perm_section_host_su">手机 su</string>
+    <string name="perm_host_su_cli_description">Magisk/KernelSU 主机 root。su 不可用时回退到 Shizuku。</string>
+    <string name="perm_host_su_section_footer">android-su / su 走手机真实 root（不是 PRoot 假 root）。优先 Magisk 或 KernelSU；失败则用 Shizuku 重试同一条命令。Agent 权限，以及 su 或 Shizuku 其中一端可用，两者都需要。</string>
+    <string name="host_su_title">手机 su</string>
+    <string name="host_su_status_header">Magisk / KernelSU</string>
+    <string name="host_su_status_footer">打开本页不会弹出 Magisk 授权。点「测试」才会执行 `su -c id`（那时可能弹出授权框）。</string>
+    <string name="host_su_found">已找到 su</string>
+    <string name="host_su_not_found">未找到 su</string>
+    <string name="host_su_not_found_sub">请安装 Magisk 或 KernelSU 后回到本页。</string>
+    <string name="host_su_badge_found">就绪</string>
+    <string name="host_su_badge_missing">缺失</string>
+    <string name="host_su_recheck_btn">重新检测二进制</string>
+    <string name="host_su_recheck_sub">只在磁盘上查找 su，不会弹出授权</string>
+    <string name="host_su_test_btn">测试 su -c id</string>
+    <string name="host_su_testing">测试中…</string>
+    <string name="host_su_test_sub">会调用主机 su；Magisk 可能要求授权 Minis Linux</string>
+    <string name="host_su_test_ok">uid 0</string>
+    <string name="host_su_test_fail">失败</string>
+    <string name="host_su_fallback_header">Shizuku 回退</string>
+    <string name="host_su_fallback_footer">主机 su 不存在或 Magisk 拒绝授权时，android-su 会通过 Shizuku 重试。无线 ADB 启动的 Shizuku 是 shell 用户，不是 uid 0；用 root/Sui 启动才是 root。</string>
+    <string name="host_su_fallback_shizuku">Shizuku / AXManager / Sui</string>
+    <string name="host_su_open_detail">手机 su 详情</string>
     <string name="perm_a11y_open_settings">前往无障碍设置</string>
     <string name="perm_system_authorization">系统授权</string>
     <string name="perm_agent_policy">Agent 权限</string>
@@ -926,7 +949,7 @@
     <string name="rootfs_result_section">结果</string>
     <string name="rootfs_info_section">信息</string>
     <string name="rootfs_about_title">关于 Rootfs</string>
-    <string name="rootfs_about_description">rootfs 包含沙箱使用的 Alpine Linux 文件系统。重置将删除所有数据并恢复出厂状态。</string>
+    <string name="rootfs_about_description">rootfs 包含沙箱使用的 Ubuntu 文件系统。重置将删除所有数据并恢复出厂状态。</string>
     <string name="rootfs_about_operations">重置：删除全部 | 备份：保存 /root 目录 | 恢复：恢复已保存的数据</string>
     <string name="rootfs_reset_confirm_title">重置 Rootfs？</string>
     <string name="rootfs_reset_confirm_message">这将删除整个 rootfs。所有数据将丢失。</string>
@@ -1564,7 +1587,7 @@
     <string name="system_permissions_a11y_restricted_shizuku_sub">一键解除，无需离开 Minis</string>
     <string name="system_permissions_a11y_restricted_working">正在解除…</string>
     <string name="system_permissions_a11y_restricted_failed">解除失败 — 请按下方步骤手动操作</string>
-    <string name="a11y_service_label">Minis 无障碍</string>
+    <string name="a11y_service_label">Minis Linux 无障碍</string>
     <string name="a11y_service_description">让 Minis 代表调用 android-a11y-cli 的 Agent 读取屏幕 UI 结构、执行点击与手势，并接收系统事件。</string>
     <string name="a11y_service_summary">Minis 的 UI 层自动化后端</string>
     <string name="back">返回</string>

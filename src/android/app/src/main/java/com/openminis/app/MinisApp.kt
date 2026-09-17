@@ -47,6 +47,7 @@ import com.openminis.app.sandbox.offload.LocationOffloadHandler
 import com.openminis.app.sandbox.offload.ModelUseOffloadHandler
 import com.openminis.app.sandbox.offload.SessionsOffloadHandler
 import com.openminis.app.sandbox.offload.ShizukuOffloadHandler
+import com.openminis.app.sandbox.offload.SuOffloadHandler
 import com.openminis.app.sandbox.offload.NotificationOffloadHandler
 import com.openminis.app.sandbox.offload.OpenOffloadHandler
 import com.openminis.app.sandbox.offload.PhotosOffloadHandler
@@ -574,9 +575,15 @@ class MinisApp : Application(), ImageLoaderFactory {
         // up the binder lifecycle listeners + StateFlow.
         NativeOffloadServer.register("android-shizuku-cli", ShizukuOffloadHandler(this))
         com.openminis.app.offload.ShizukuManager.init(this)
+        // Host Magisk/KernelSU su passthrough (no Shizuku). Registered as
+        // both `su` and `android-su` so PATH lookup and the android-* CLI
+        // convention both work; installHandlerStubs writes both stubs.
+        val suHandler = SuOffloadHandler()
+        NativeOffloadServer.register("android-su", suHandler)
+        NativeOffloadServer.register("su", suHandler)
 
         // T-android-minis-debug-cli: shell-side CLI wrapper around the in-app
-        // DebugServer (127.0.0.1:5321) JSON-RPC. DEBUG-only — Release builds
+        // DebugServer (127.0.0.1:5322) JSON-RPC. DEBUG-only — Release builds
         // ship neither the DebugServer nor this handler, so the
         // `/usr/local/bin/minis-debug` stub is also absent (PRootKernel.
         // installHandlerStubs enumerates currently-registered handlers).

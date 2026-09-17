@@ -171,7 +171,7 @@ internal object ProviderDebugMethods {
      * portable JSON document. Mirrors the UI Share button. The API key is
      * base64-wrapped (same as ProviderRepository.exportInstanceJSON) — that's
      * to survive JSON-string escaping of arbitrary key bytes, not for
-     * security; callers of the 5321 RPC are trusted by definition.
+     * security; callers of the 5322 RPC are trusted by definition.
      */
     fun export(context: Context, params: JSONObject): JSONObject {
         val instanceId = params.optString("instanceId", "").ifEmpty {

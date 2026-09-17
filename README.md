@@ -5,6 +5,8 @@
 
 **Your private, on-device AI agent.**
 
+> **This tree is the OpenMinis-Linux fork** (`applicationId` `com.openminis.linux`). It can be installed next to official OpenMinis. See [LINUX.md](LINUX.md) for host `su`, toolchain setup (`minis-dev-setup`), POSIX `/sdcard` binds, and the Ubuntu 24.04 PRoot guest.
+
 OpenMinis brings leading models — Claude, GPT, Gemini and more — into a native
 mobile experience, and gives them a real computer to work with: a full Linux
 shell running on your device, browser automation, extensible skills, persistent

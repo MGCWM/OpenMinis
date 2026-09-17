@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Minis</string>
+    <string name="app_name">Minis Linux</string>
     <string name="new_chat">새 채팅</string>
     <string name="settings">설정</string>
     <string name="providers">AI 공급자</string>
@@ -276,7 +276,7 @@
     <string name="settings_env_vars">환경 변수</string>
     <string name="settings_env_vars_subtitle">샌드박스에 주입되는 변수</string>
     <string name="settings_section_storage">저장 공간</string>
-    <string name="settings_storage_subtitle">Alpine Linux rootfs를 관리하고 파일을 탐색</string>
+    <string name="settings_storage_subtitle">Ubuntu rootfs를 관리하고 파일을 탐색</string>
     <string name="settings_section_permissions">권한</string>
     <string name="settings_permissions_subtitle">프라이버시 관련 기능에 대한 Agent의 접근을 제어</string>
     <string name="settings_section_logs">로그</string>
@@ -926,7 +926,7 @@
     <string name="rootfs_result_section">결과</string>
     <string name="rootfs_info_section">정보</string>
     <string name="rootfs_about_title">Rootfs에 대하여</string>
-    <string name="rootfs_about_description">rootfs 에는 샌드박스가 사용하는 Alpine Linux 파일시스템이 포함됩니다. 재설정하면 모든 데이터가 삭제되고 초기 상태로 복원됩니다.</string>
+    <string name="rootfs_about_description">rootfs 에는 샌드박스가 사용하는 Ubuntu 파일시스템이 포함됩니다. 재설정하면 모든 데이터가 삭제되고 초기 상태로 복원됩니다.</string>
     <string name="rootfs_about_operations">재설정: 모두 삭제 | 백업: /root 저장 | 복원: 저장된 데이터 복원</string>
     <string name="rootfs_reset_confirm_title">Rootfs를 초기화하시겠습니까?</string>
     <string name="rootfs_reset_confirm_message">rootfs 전체가 삭제됩니다. 모든 데이터가 손실됩니다.</string>
@@ -1564,7 +1564,7 @@
     <string name="system_permissions_a11y_restricted_shizuku_sub">한 번만 탭하면 Minis를 벗어나지 않고 해제됩니다</string>
     <string name="system_permissions_a11y_restricted_working">허용하는 중…</string>
     <string name="system_permissions_a11y_restricted_failed">실패했습니다 — 아래의 수동 절차를 따르세요</string>
-    <string name="a11y_service_label">Minis 접근성</string>
+    <string name="a11y_service_label">Minis Linux 접근성</string>
     <string name="a11y_service_description">android-a11y-cli를 사용하는 Agent를 대신해 Minis가 화면의 UI 구조를 읽고, 탭과 제스처를 실행하고, 시스템 이벤트를 받을 수 있도록 합니다.</string>
     <string name="a11y_service_summary">Minis의 UI 계층 자동화 백엔드</string>
     <string name="back">뒤로</string>

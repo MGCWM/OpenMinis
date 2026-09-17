@@ -88,6 +88,10 @@ object OffloadPermissionManager {
         // is already authorized.
         ToolPermissionInfo("a11y_cli", "android-a11y-cli", PermissionCategory.INTEGRATIONS, PermissionLevel.NOT_ALLOWED),
         ToolPermissionInfo("shizuku_cli", "android-shizuku-cli", PermissionCategory.INTEGRATIONS, PermissionLevel.NOT_ALLOWED),
+        // Host Magisk/KernelSU `su` passthrough. Default BYPASS so a rooted
+        // device can `su -c` without Shizuku; still visible in Settings so
+        // the user can drop it to ASK_ONCE / NOT_ALLOWED.
+        ToolPermissionInfo("su_cli", "android-su", PermissionCategory.INTEGRATIONS, PermissionLevel.BYPASS),
     )
 
     /** Stable session-id used by NativeOffloadHandlers when calling

@@ -79,7 +79,7 @@ fun StorageManagementScreen(
         scope.launch {
             isLoading = true
             withContext(Dispatchers.IO) {
-                shellSize = directorySize(File(context.filesDir, "alpine-rootfs"))
+                shellSize = directorySize(File(context.filesDir, "ubuntu-rootfs"))
                 dbSize = databaseSize(context)
 
                 val allSessions = chatDao.listSessions()

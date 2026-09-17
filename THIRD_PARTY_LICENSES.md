@@ -12,7 +12,9 @@ OpenMinis bundles, links, or depends on the following third-party components. Ve
 | [LAME](https://lame.sourceforge.io) | 3.100, vendored at `deps/lame-3.100` | **LGPL-2.0-or-later** | MP3 encoder, linked into FFmpeg via `--enable-libmp3lame` |
 | [talloc](https://talloc.samba.org) (Samba) | vendored at `deps/talloc` | **LGPL-3.0-or-later** | Memory allocator required by proot |
 | [cppjieba](https://github.com/yanyiwu/cppjieba) | vendored (iOS `Vendor/cppjieba`, Android `jieba_jni`) | **MIT** | Chinese word segmentation (header-only + dictionaries) |
-| Alpine Linux minirootfs | downloaded at build time by `deps/prepare_alpine_rootfs.sh` | Aggregate of package licenses (musl **MIT**, BusyBox **GPL-2.0**, etc.) | Not stored in this repo; bundled into app builds as the default rootfs |
+| Alpine Linux minirootfs | downloaded at build time by `deps/prepare_alpine_rootfs.sh` | Aggregate of package licenses (musl **MIT**, BusyBox **GPL-2.0**, etc.) | iOS iSH guest only; not stored in this repo |
+| Ubuntu 24.04 base (noble arm64) | downloaded by `scripts/prepare_android_sandbox.sh` | Canonical / Ubuntu package licenses (glibc **LGPL-2.1**, apt **GPL-2.0**, etc.) | Android PRoot guest; not stored in this repo |
+| [android-sdk-tools](https://github.com/lzhiyong/android-sdk-tools) aarch64 (aapt2, zipalign, adb, aidl) | 35.0.2 static | **Apache-2.0** (AOSP) | Vendored as `assets/android-sdk-tools-aarch64.zip`; unpacked to `/opt/android-sdk` |
 
 ## iOS — Swift Package Manager dependencies
 

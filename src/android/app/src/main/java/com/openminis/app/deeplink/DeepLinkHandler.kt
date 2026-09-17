@@ -29,6 +29,8 @@ import com.openminis.app.ui.navigation.Routes
  *   minis://settings/background                 → Background settings
  *   minis://settings/about                      → About
  *   minis://settings/permissions                → Permissions
+ *   minis://settings/host-su                    → Host su (Magisk/KernelSU)
+ *   minis://settings/shizuku                    → Shizuku / AXManager / Sui
  *   minis://settings/environments[?create_key=...&create_value=...&create_note=...]
  *                                               → Environment variables
  *   minis://settings/rootfs                     → Rootfs management (mirror config lives here)
@@ -194,6 +196,9 @@ object DeepLinkHandler {
             "background" -> DeepLinkAction.OpenSettingsScreen(Routes.BACKGROUND)
             "about" -> DeepLinkAction.OpenSettingsScreen(Routes.ABOUT)
             "permissions" -> DeepLinkAction.OpenPermissionSettings
+            "shizuku" -> DeepLinkAction.OpenSettingsScreen(Routes.SHIZUKU)
+            "host-su", "host_su", "android-su", "su" ->
+                DeepLinkAction.OpenSettingsScreen(Routes.HOST_SU)
             // mirrors live as a section inside Rootfs management — no
             // standalone destination, so route both /mirrors and /rootfs
             // there. The user lands on the same screen; mirror config is

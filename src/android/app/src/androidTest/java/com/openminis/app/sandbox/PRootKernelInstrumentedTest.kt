@@ -118,7 +118,7 @@ class PRootKernelInstrumentedTest {
         // Should have -r flag with rootfs
         val rIndex = cmd.indexOf("-r")
         assertTrue("Should contain -r flag", rIndex >= 0)
-        assertTrue("Rootfs path should follow -r", cmd[rIndex + 1].contains("alpine-rootfs"))
+        assertTrue("Rootfs path should follow -r", cmd[rIndex + 1].contains("ubuntu-rootfs"))
 
         // Should bind /dev, /proc, /sys
         assertTrue("Should bind /dev", cmd.contains("/dev"))
@@ -132,7 +132,7 @@ class PRootKernelInstrumentedTest {
 
         // Should end with /bin/sh -c "echo hello"
         val lastThree = cmd.takeLast(3)
-        assertEquals("/bin/sh", lastThree[0])
+        assertEquals("/bin/bash", lastThree[0])
         assertEquals("-c", lastThree[1])
         assertEquals("echo hello", lastThree[2])
     }
@@ -145,12 +145,12 @@ class PRootKernelInstrumentedTest {
         }
         PRootKernel.boot(context)
 
-        PRootKernel.addBindMount("/var/minis/workspace", "/data/user/0/com.openminis.app/workspace")
+        PRootKernel.addBindMount("/var/minis/workspace", "/data/user/0/com.openminis.linux/workspace")
 
         val cmd = PRootKernel.buildProotCommand("ls /var/minis/workspace")
 
         // Should contain -b host:linux format
-        val bindStr = "/data/user/0/com.openminis.app/workspace:/var/minis/workspace"
+        val bindStr = "/data/user/0/com.openminis.linux/workspace:/var/minis/workspace"
         assertTrue("Should contain bind mount arg", cmd.contains(bindStr))
     }
 
@@ -234,7 +234,7 @@ class PRootKernelInstrumentedTest {
         // No bind mounts → should resolve relative to rootfsDir
         val result = PRootKernel.resolveHostPath("/etc/resolv.conf")
         assertNotNull(result)
-        assertTrue("Should resolve inside rootfs", result!!.path.contains("alpine-rootfs"))
+        assertTrue("Should resolve inside rootfs", result!!.path.contains("ubuntu-rootfs"))
         assertTrue("Should end with etc/resolv.conf", result.path.endsWith("etc/resolv.conf"))
     }
 
@@ -265,7 +265,7 @@ class PRootKernelInstrumentedTest {
 
     private fun canBoot(): Boolean {
         return try {
-            context.assets.open("alpine-minirootfs.tar.gz").use { }
+            context.assets.open("ubuntu-base.tar.gz").use { }
             context.assets.open("proot-aarch64").use { }
             true
         } catch (_: Exception) {

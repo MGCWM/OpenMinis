@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Accessibility
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
@@ -32,6 +33,7 @@ import com.openminis.app.R
 import com.openminis.app.accessibility.MinisAccessibilityService
 import com.openminis.app.accessibility.RestrictedSettingsManager
 import com.openminis.app.logging.AppLogger
+import com.openminis.app.offload.HostSuManager
 import com.openminis.app.offload.OffloadPermissionManager
 import com.openminis.app.offload.ShizukuManager
 import com.openminis.app.ui.components.MinisMenu
@@ -45,6 +47,7 @@ fun OffloadPermissionScreen(
     // [T-android-privileged-backend] Navigate to the multi-backend
     // (Shizuku + AXManager) screen from the privileged-backend integration row.
     onOpenPrivilegedBackend: () -> Unit = {},
+    onOpenHostSu: () -> Unit = {},
 ) {
     val grouped = OffloadPermissionManager.toolRegistry
         .filter { it.showInSettings }
@@ -81,6 +84,8 @@ fun OffloadPermissionScreen(
         }
     }
     val shizukuSnap by ShizukuManager.snapshot.collectAsState()
+    val hostSuSnap by HostSuManager.snapshot.collectAsState()
+    LaunchedEffect(Unit) { HostSuManager.refresh() }
 
     SettingsScaffold(
         title = stringResource(R.string.perm_title),
@@ -195,6 +200,22 @@ fun OffloadPermissionScreen(
                 )
             }
         }
+
+        IntegrationSection(
+            iconVector = Icons.Outlined.Security,
+            iconTint = Color(0xFFFF9500),
+            sectionHeaderRes = R.string.perm_section_host_su,
+            sectionFooterRes = R.string.perm_host_su_section_footer,
+            toolName = "su_cli",
+            descriptionRes = R.string.perm_host_su_cli_description,
+            systemReady = hostSuSnap.state == HostSuManager.State.FOUND,
+            systemStatusTitleRes =
+                if (hostSuSnap.state == HostSuManager.State.FOUND) R.string.host_su_found
+                else R.string.host_su_not_found,
+            systemActionTitleRes = R.string.host_su_open_detail,
+            onSystemAction = onOpenHostSu,
+            onStatusRowClick = onOpenHostSu,
+        )
 
         IntegrationSection(
             iconVector = Icons.Outlined.Shield,
@@ -458,6 +479,7 @@ private fun toolTitleRes(toolName: String): Int = when (toolName) {
     "photos" -> R.string.perm_tool_photos
     "a11y_cli" -> R.string.perm_tool_a11y_cli
     "shizuku_cli" -> R.string.perm_tool_shizuku_cli
+    "su_cli" -> R.string.perm_tool_su_cli
     else -> 0
 }
 

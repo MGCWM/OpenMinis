@@ -89,8 +89,16 @@ object PRootKernel {
         if (loaderPath.exists()) prootLoaderPath = loaderPath.absolutePath
         if (loader32Path.exists()) prootLoader32Path = loader32Path.absolutePath
 
-        // Set default PATH for Alpine Linux
-        customEnvironment.putIfAbsent("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin")
+        // Set default PATH for Ubuntu Linux
+        customEnvironment.putIfAbsent(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin:" +
+                "/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/build-tools/35.0.2:/opt/gradle/bin",
+        )
+        customEnvironment.putIfAbsent("DEBIAN_FRONTEND", "noninteractive")
+        customEnvironment.putIfAbsent("SHELL", "/bin/bash")
+        customEnvironment.putIfAbsent("ANDROID_HOME", "/opt/android-sdk")
+        customEnvironment.putIfAbsent("ANDROID_SDK_ROOT", "/opt/android-sdk")
         customEnvironment.putIfAbsent("HOME", "/root")
 
         // URL interception: seed $BROWSER directly into every process envp
@@ -243,16 +251,14 @@ object PRootKernel {
      */
     fun applyMountedFoldersSnapshot(context: Context) {
         val store = mountedFoldersStore
-        val desired: Map<String, String> = if (store == null) {
-            emptyMap()
-        } else {
-            store.entries.value
-                .mapNotNull { entry ->
-                    val host = resolveTreeUriToHostPath(entry.treeUri, context) ?: return@mapNotNull null
-                    "$MOUNTS_LINUX_PREFIX${entry.name}" to host
-                }
-                .toMap()
+        val desired = mutableMapOf<String, String>()
+        if (store != null) {
+            for (entry in store.entries.value) {
+                val host = resolveTreeUriToHostPath(entry.treeUri, context) ?: continue
+                desired["$MOUNTS_LINUX_PREFIX${entry.name}"] = host
+            }
         }
+        applySharedStorageBinds(context, desired)
 
         // Remove stale /var/minis/mounts/* keys not in desired.
         val stale = bindMounts.keys
@@ -295,6 +301,50 @@ object PRootKernel {
                 "applyMountedFoldersSnapshot: ${entryCount - desired.size} mount(s) dropped — host path " +
                     "unresolved or unreadable (see resolveTreeUriToHostPath warnings above)",
             )
+        }
+    }
+
+    /**
+     * Bind host shared storage into the guest when All Files Access (or
+     * legacy WRITE_EXTERNAL_STORAGE on API 29) is granted. PRoot `-b` then
+     * gives POSIX read/write without going back through SAF DocumentFile.
+     * Does not override a user mount already named `sdcard`.
+     */
+    private fun applySharedStorageBinds(context: Context, desired: MutableMap<String, String>) {
+        val extras = listOf("/sdcard", "/storage/emulated/0")
+        val host = Environment.getExternalStorageDirectory()?.absolutePath
+        if (host.isNullOrBlank() || !hasSharedStorageAccess(context) || !File(host).canRead()) {
+            extras.forEach { bindMounts.remove(it) }
+            return
+        }
+        extras.forEach { bindMounts[it] = host }
+        materializeAbsoluteTargets(context, extras)
+        val userNames = desired.keys.map { it.removePrefix(MOUNTS_LINUX_PREFIX) }.toSet()
+        if ("sdcard" !in userNames) {
+            desired["${MOUNTS_LINUX_PREFIX}sdcard"] = host
+        }
+    }
+
+    private fun hasSharedStorageAccess(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            context.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun materializeAbsoluteTargets(context: Context, linuxPaths: List<String>) {
+        val rootfs = try {
+            RootfsManager.getInstance(context).rootfsDir
+        } catch (t: Throwable) {
+            Log.w(TAG, "materializeAbsoluteTargets: rootfs not yet available: ${t.message}")
+            return
+        }
+        for (linuxPath in linuxPaths) {
+            File(rootfs, linuxPath.removePrefix("/")).mkdirs()
         }
     }
 
@@ -652,7 +702,7 @@ object PRootKernel {
         }
 
         // Shell command
-        cmd.add("/bin/sh")
+        cmd.add("/bin/bash")
         cmd.add("-c")
         cmd.add(shellCommand)
 

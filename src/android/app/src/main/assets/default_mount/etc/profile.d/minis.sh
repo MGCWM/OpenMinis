@@ -6,14 +6,16 @@
 # relying on \h, so the prompt is stable regardless of what /etc/hostname
 # happens to contain. We do the same on Android so a fresh install
 # matches without needing a rootfs rebuild.
-export PS1='\u@minis:\w\$ '
+export PS1='\u@minis-linux:\w\$ '
 
-# Enable ash command history with arrow keys
-export HISTFILE="$HOME/.ash_history"
+# Enable bash command history with arrow keys
+export HISTFILE="$HOME/.bash_history"
+export SHELL=/bin/bash
+export DEBIAN_FRONTEND=noninteractive
 export HISTSIZE=1000
 
-# Point ENV to .ashrc so interactive ash picks up line-editing config
-export ENV="$HOME/.ashrc"
+# Interactive bash reads ~/.bashrc; keep ENV for dash leftovers.
+export ENV="$HOME/.bashrc"
 
 # Default pager — less is standard on Alpine; keep explicit for scripts
 # that probe $PAGER.
@@ -33,3 +35,16 @@ export BROWSER=/usr/local/bin/minis-open
 # Force uv to symlink package files instead — the sentinels are then never
 # touched as link sources. Reported as openminis/openminis#7.
 export UV_LINK_MODE=symlink
+
+# Toolchain paths (populated by minis-dev-setup / minis-android-sdk-setup).
+export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
+export PATH="$PATH:/opt/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/build-tools/35.0.2:/opt/gradle/bin"
+for _jdk in /usr/lib/jvm/java-21-openjdk-arm64 /usr/lib/jvm/java-17-openjdk-arm64 /usr/lib/jvm/default-java; do
+  if [ -d "$_jdk" ]; then
+    export JAVA_HOME="$_jdk"
+    export PATH="$JAVA_HOME/bin:$PATH"
+    break
+  fi
+done
+unset _jdk

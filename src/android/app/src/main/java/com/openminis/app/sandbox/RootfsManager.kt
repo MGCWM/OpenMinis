@@ -14,6 +14,7 @@ import java.io.FilterInputStream
 import java.io.InputStream
 import java.nio.charset.Charset
 import java.util.zip.GZIPInputStream
+import java.util.zip.ZipInputStream
 
 /**
  * Observable state for rootfs installation. Mirrors the conceptual iOS
@@ -34,19 +35,21 @@ sealed class RootfsInstallState {
 }
 
 /**
- * Manages Alpine Linux rootfs installation and PRoot binary extraction.
+ * Manages Ubuntu Linux rootfs installation and PRoot binary extraction.
  * Corresponds to iOS RootfsManager.swift.
  */
 class RootfsManager private constructor(private val context: Context) {
 
-    val rootfsDir: File = File(context.filesDir, "alpine-rootfs")
+    val rootfsDir: File = File(context.filesDir, "ubuntu-rootfs")
     val prootBinary: File = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
 
     private val archFile: File get() = File(rootfsDir, ".arch")
+    private val distroFile: File get() = File(rootfsDir, ".distro")
 
     val isInstalled: Boolean
         get() = rootfsDir.exists() && archFile.exists() &&
-                archFile.readText().trim() == ARCH
+                archFile.readText().trim() == ARCH &&
+                distroFile.exists() && distroFile.readText().trim() == DISTRO
 
     /**
      * Observable install progress. UI layers (OnboardingScreen,
@@ -60,8 +63,8 @@ class RootfsManager private constructor(private val context: Context) {
     val installState: StateFlow<RootfsInstallState> = _installState.asStateFlow()
 
     /**
-     * Install Alpine rootfs from assets if not already present.
-     * Extracts alpine-minirootfs.tar.gz using manual POSIX tar parsing.
+     * Install Ubuntu rootfs from assets if not already present.
+     * Extracts ubuntu-base.tar.gz using manual POSIX tar parsing.
      * Progress is published to [installState] (Preparing → Extracting(f) →
      * Finalizing → Installed / Failed).
      */
@@ -74,7 +77,7 @@ class RootfsManager private constructor(private val context: Context) {
 
         try {
             _installState.value = RootfsInstallState.Preparing
-            Log.i(TAG, "Installing Alpine rootfs...")
+            Log.i(TAG, "Installing Ubuntu rootfs...")
 
             // Clean up any partial install
             if (rootfsDir.exists()) {
@@ -121,6 +124,9 @@ class RootfsManager private constructor(private val context: Context) {
 
             // Write arch marker
             archFile.writeText(ARCH)
+            distroFile.writeText(DISTRO)
+            configureUbuntuGuest()
+            deleteLegacyAlpineRootfs()
 
             // Pre-create /var/minis directories. Mirrors iOS
             // RootfsManager.swift:76-80 (attachments/offloads/workspace/skills/
@@ -316,6 +322,99 @@ class RootfsManager private constructor(private val context: Context) {
      * are overwritten so users see the latest shipped version even if they
      * previously edited the file — matching iOS behavior.
      *
+     * Ubuntu-base ships a deb822 `ubuntu.sources` aimed at archive.ubuntu.com
+     * (amd64). arm64 packages live on ports.ubuntu.com; disable the stock
+     * file so overlay `etc/apt/sources.list` is the only source.
+     */
+    private fun configureUbuntuGuest() {
+        if (!rootfsDir.exists()) return
+        val deb822 = File(rootfsDir, "etc/apt/sources.list.d/ubuntu.sources")
+        if (deb822.exists()) {
+            val disabled = File(rootfsDir, "etc/apt/sources.list.d/ubuntu.sources.disabled")
+            if (disabled.exists()) disabled.delete()
+            if (!deb822.renameTo(disabled)) {
+                deb822.delete()
+            }
+        }
+        val hosts = File(rootfsDir, "etc/hosts")
+        if (!hosts.exists() || hosts.length() < 8) {
+            hosts.parentFile?.mkdirs()
+            hosts.writeText("127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n")
+        }
+        installBundledAndroidSdkTools()
+    }
+
+    /**
+     * Unpack vendored aarch64 aapt2/zipalign/adb into `/opt/android-sdk`.
+     * Google's official build-tools are x86_64; these binaries are AOSP static
+     * aarch64 builds (lzhiyong/android-sdk-tools 35.0.2).
+     */
+    private fun installBundledAndroidSdkTools() {
+        val marker = File(rootfsDir, "opt/android-sdk/.minis-sdk-tools")
+        val input = try {
+            context.assets.open(SDK_TOOLS_ASSET)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Bundled aarch64 SDK tools asset missing: ${t.message}")
+            return
+        }
+        try {
+            input.use { raw ->
+                ZipInputStream(raw).use { zis ->
+                    while (true) {
+                        val entry = zis.nextEntry ?: break
+                        val name = entry.name.replace('\\', '/').trimStart('/')
+                        if (name.isEmpty() || name.contains("..")) continue
+                        val destRel = when {
+                            name.startsWith("build-tools/") ->
+                                "opt/android-sdk/build-tools/$SDK_BUILD_TOOLS_REV/" +
+                                    name.removePrefix("build-tools/")
+                            name.startsWith("platform-tools/") ->
+                                "opt/android-sdk/$name"
+                            else -> continue
+                        }
+                        val out = File(rootfsDir, destRel)
+                        if (entry.isDirectory || name.endsWith("/")) {
+                            out.mkdirs()
+                            continue
+                        }
+                        out.parentFile?.mkdirs()
+                        out.outputStream().use { zis.copyTo(it) }
+                        out.setExecutable(true, false)
+                    }
+                }
+            }
+            File(rootfsDir, "opt/android-sdk/build-tools/$SDK_BUILD_TOOLS_REV/source.properties")
+                .writeText("Pkg.UserSrc=false\nPkg.Revision=$SDK_BUILD_TOOLS_REV\n")
+            File(rootfsDir, "opt/android-sdk/platform-tools/source.properties")
+                .writeText("Pkg.UserSrc=false\nPkg.Revision=$SDK_BUILD_TOOLS_REV\n")
+            val gradleProps = File(rootfsDir, "root/.gradle/gradle.properties")
+            gradleProps.parentFile?.mkdirs()
+            val override =
+                "android.aapt2FromMavenOverride=/opt/android-sdk/build-tools/$SDK_BUILD_TOOLS_REV/aapt2"
+            val existing = if (gradleProps.exists()) gradleProps.readText() else ""
+            if (!existing.contains("android.aapt2FromMavenOverride")) {
+                gradleProps.appendText(
+                    if (existing.isEmpty() || existing.endsWith("\n")) "$override\n" else "\n$override\n",
+                )
+            }
+            marker.parentFile?.mkdirs()
+            marker.writeText("$SDK_BUILD_TOOLS_REV\n")
+            Log.i(TAG, "Installed bundled aarch64 SDK tools $SDK_BUILD_TOOLS_REV")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to install bundled aarch64 SDK tools: ${t.message}", t)
+        }
+    }
+
+    /** Drop the previous Alpine extract so it doesn't sit around after the distro switch. */
+    private fun deleteLegacyAlpineRootfs() {
+        val legacy = File(context.filesDir, "alpine-rootfs")
+        if (legacy.exists()) {
+            Log.i(TAG, "Deleting legacy Alpine rootfs at $legacy")
+            legacy.deleteRecursively()
+        }
+    }
+
+    /**
      * No-op when the asset dir is missing or the rootfs hasn't been extracted.
      */
     suspend fun applyDefaultMountOverlay() = withContext(Dispatchers.IO) {
@@ -341,6 +440,7 @@ class RootfsManager private constructor(private val context: Context) {
         var fileCount = 0
         try {
             fileCount = copyAssetDir(DEFAULT_MOUNT_ASSET, rootfsDir)
+            configureUbuntuGuest()
         } catch (t: Throwable) {
             Log.w(TAG, "[DefaultMount] overlay failed: ${t.message}", t)
             return@withContext
@@ -627,10 +727,13 @@ class RootfsManager private constructor(private val context: Context) {
     companion object {
         private const val TAG = "RootfsManager"
         private const val ARCH = "aarch64"
-        private const val ROOTFS_ASSET = "alpine-minirootfs.tar.gz"
-        private const val ROOTFS_ASSET_TAR = "alpine-minirootfs.tar"
+        private const val ROOTFS_ASSET = "ubuntu-base.tar.gz"
+        private const val ROOTFS_ASSET_TAR = "ubuntu-base.tar"
+        private const val DISTRO = "ubuntu-noble"
         private const val PROOT_ASSET = "proot-aarch64"
         private const val DEFAULT_MOUNT_ASSET = "default_mount"
+        private const val SDK_TOOLS_ASSET = "android-sdk-tools-aarch64.zip"
+        private const val SDK_BUILD_TOOLS_REV = "35.0.2"
 
         /**
          * Rootfs paths whose contents must be executable. Matches iOS

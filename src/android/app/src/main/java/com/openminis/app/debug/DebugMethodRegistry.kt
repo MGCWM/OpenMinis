@@ -471,7 +471,7 @@ object DebugMethodRegistry {
         ),
         MethodSpec(
             name = "provider.export",
-            description = "Export a provider instance (config + models + stored API key) as a portable JSON envelope. Mirrors the in-app Share/Export button. The API key is base64-wrapped to survive JSON string escaping; this is NOT a security boundary — callers of the 5321 RPC are trusted.",
+            description = "Export a provider instance (config + models + stored API key) as a portable JSON envelope. Mirrors the in-app Share/Export button. The API key is base64-wrapped to survive JSON string escaping; this is NOT a security boundary — callers of the 5322 RPC are trusted.",
             params = listOf(
                 ParamSpec("instanceId", "string", required = true, description = "Target instance UUID."),
             ),

@@ -325,7 +325,7 @@ class ExecutionCoordinatorInstrumentedTest {
 
     private fun canBoot(): Boolean {
         return try {
-            context.assets.open("alpine-minirootfs.tar.gz").use { }
+            context.assets.open("ubuntu-base.tar.gz").use { }
             context.assets.open("proot-aarch64").use { }
             true
         } catch (_: Exception) {

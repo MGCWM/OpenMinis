@@ -8,7 +8,7 @@ package com.openminis.app.sandbox
  *
  *   - quick shell utilities (`ls`, `cat`, `grep`, `sed`, `awk`) finish in
  *     under a second and should fail fast if they don't
- *   - package installs (`apk add`, `pip install`, `npm install`) legitimately
+ *   - package installs (`apt-get install`, `pip install`, `npm install`) legitimately
  *     take 2–5 minutes and should not hit a tight timeout
  *   - build / compile commands (`make`, `cargo build`, `go build`) can run 10+
  *     minutes on non-trivial projects
