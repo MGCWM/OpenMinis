@@ -478,13 +478,14 @@ object SystemPromptBuilder {
      * sentence alone is the safe fallback when SOUL.md is missing or
      * empty, matching pre-SOUL behavior.
      */
-    fun identitySection(context: Context): String {
+    fun identitySection(context: Context, providerInstanceId: String? = null): String {
         val file = SoulStore.load(context)
         val name = (file?.metadata?.name ?: SoulMetadata.DEFAULT.name)
             .trim()
             .ifEmpty { "Minis" }
 
         val style = (file?.metadata?.style ?: "").trim()
+        val resolved = PersonaPromptLibrary.resolve(context, providerInstanceId)
 
         val identity = IDENTITY_TEMPLATE.replace("{name}", name)
         val identityTrimmed = identity.trimEnd()
@@ -516,8 +517,7 @@ object SystemPromptBuilder {
             return "\n\nResponse style (from SOUL.md `style` — apply to every reply unless the user explicitly asks otherwise; if it prescribes a reply language, it overrides the default match-the-user's-language rule):\n$s"
         }
 
-        val body = file?.body
-        val trimmed = body?.trim().orEmpty()
+        val trimmed = resolved.body.trim()
         if (trimmed.isEmpty()) {
             return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
         }
@@ -537,11 +537,12 @@ object SystemPromptBuilder {
         }
 
         val personality = scrubInjections(trimmed)
+        val sourceLabel = resolved.fileName.ifBlank { PersonaPromptLogic.BUILTIN_FILE_NAME }
 
         // Strip the trailing space we'd otherwise leave hanging at the
         // end of the first paragraph when a personality block follows.
         return identityTrimmed +
-            "\n\nPersonality (from SOUL.md — your character and voice; defer to the user's latest message when it conflicts with anything here):\n" +
+            "\n\nPersonality (from $sourceLabel — BINDING for this entire conversation, including tool use and this turn. Do not treat it as optional flavour, do not replace it with a generic assistant voice, and do not drop it when a later user message looks more specific unless the user explicitly asks you to leave character):\n" +
             personality +
             styleBlock(style) +
             "\n\n" +

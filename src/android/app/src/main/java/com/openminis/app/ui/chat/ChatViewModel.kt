@@ -10077,7 +10077,13 @@ class ChatViewModel(
         // has no personality body, identitySection() returns the identity
         // sentence with its original single trailing space — the full
         // assembled prompt then matches the pre-SOUL prompt byte-for-byte.
-        val identitySection = com.openminis.app.agent.SystemPromptBuilder.identitySection(context)
+        val providerInstanceId = _activeEntryId.value?.let { id ->
+            providerRepository.config.value.modelEntries.find { it.id == id }?.providerInstanceId
+        }
+        val identitySection = com.openminis.app.agent.SystemPromptBuilder.identitySection(
+            context,
+            providerInstanceId,
+        )
         // [T-memory-toggle-gates-injection-and-tools-android] Mirror the iOS
         // gate: when memory is disabled for this session, replace the
         // "memory_write / memory_get" tool bullets and the "Memory system:"
