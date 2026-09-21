@@ -4,11 +4,41 @@ This fork keeps the OpenMinis agent + PRoot sandbox, then adds a Linux-leaning
 toolchain, host `su` passthrough, POSIX shared-storage mounts, and a distinct
 Android identity so it can be installed **next to** official OpenMinis.
 
-## Guest OS
+启动器名称是 **Minis Ultra**，`applicationId` 为 `com.openminis.linux`。当前版本 **1.36.10-linux**（versionCode 63）。
 
-The Android guest is **Ubuntu 24.04 (noble) arm64** extracted from Canonical's
-`ubuntu-base` tarball, running under **PRoot** (not KVM, not a chroot that
-needs kernel user namespaces).
+滚动 APK：GitHub Releases 标签 `android-latest`，文件名 `minis-ultra-com.openminis.linux.apk`。关于页 / 检查更新走 fork `tall-1997/OpenMinis-Linux`；滚动包用 release body 里的 `versionCode` / `versionName`（以及 APK `updated_at`）判断是否比本机新。
+
+正式发行包：[Releases `1.36.10-linux`](https://github.com/tall-1997/OpenMinis-Linux/releases/tag/1.36.10-linux)。1.36.10：人格提示词改为文件名入口 + 二级编辑，支持导入 .md/.txt 并按供应商选择。详见 [docs/RELEASE-NOTES.zh.md](docs/RELEASE-NOTES.zh.md)。
+
+## 沙箱当服务器
+
+客户机里可以直接驱动主机：
+
+```
+minis-toast 备份完成
+minis-clipboard get
+minis-clipboard set --text 'hello'
+minis-open --system https://example.com   # 无 TTY 时 http(s) 也会走 android-open
+minis-firewall status
+minis-firewall set wifi-only              # 可选 --strict（整进程绑 Wi-Fi，含 LLM）
+minis-firewall log                        # 沙箱 http_proxy 记 CONNECT，无 VpnService
+minis-firewall cut                        # 一键切断沙箱出站
+minis-notify post --title 完成 --body ok --action-label 重试 --action-command /var/minis/hooks/retry.sh
+minis-on-event register battery_low /var/minis/hooks/pause.sh
+minis-doze status
+minis-doze request
+minis-ps
+cat /run/minis-host-status.json
+cat /run/android-events.jsonl
+cat /run/minis-netlog.jsonl
+cat /run/minis-proc.json
+```
+
+任务完成通知上的「重试 / 备份 / 清理」会在对应会话沙箱执行预设命令（上次 shell、打包 workspace、清 `/tmp`）。
+
+## 客户机系统
+
+Android 客户机是 Canonical **Ubuntu 24.04 (noble) arm64** 的 `ubuntu-base`，跑在 **PRoot** 里（不是 KVM，也不依赖内核 user namespace 的 chroot）。
 
 | | |
 |---|---|

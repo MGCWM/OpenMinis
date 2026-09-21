@@ -15090,10 +15090,19 @@ class ChatViewModel(
         // must be dropped when browser_use is switched off (same prompt/schema
         // drift rule as the parent's browser bullet below).
         val browserToolEnabled = com.openminis.app.tools.AgentToolSwitch.BROWSER.isEnabled(context)
+        // [T-persona-per-provider] The persona (SOUL.md) may live per provider
+        // instance; resolve it from the active entry before building the
+        // identity section.
+        val providerInstanceId = _activeEntryId.value?.let { id ->
+            providerRepository.config.value.modelEntries.find { it.id == id }?.providerInstanceId
+        }
         val identitySection = helperConfig?.let {
             com.openminis.app.agent.jobs.HelperRunner.identitySection(it, browserEnabled = browserToolEnabled)
         }
-            ?: com.openminis.app.agent.SystemPromptBuilder.identitySection(context)
+            ?: com.openminis.app.agent.SystemPromptBuilder.identitySection(
+                context,
+                providerInstanceId,
+            )
         // [T-memory-toggle-gates-injection-and-tools-android] Mirror the iOS
         // gate: when memory is disabled for this session, replace the
         // "memory_write / memory_get" tool bullets and the "Memory system:"
