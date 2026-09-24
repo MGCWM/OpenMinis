@@ -157,6 +157,15 @@ android {
         }
     }
 
+    sourceSets {
+        getByName("main") {
+            // [T-rclone-optional] Gomobile symbols for the stub build.
+            if (!file("libs/rclone.aar").isFile) {
+                java.srcDir("src/rcloneStub/java")
+            }
+        }
+    }
+
     lint {
         // AGP 8.x ships a NonNullableMutableLiveData detector that throws
         // IncompatibleClassChangeError on Kotlin source during
@@ -317,7 +326,15 @@ dependencies {
     // `deps/build_rclone_android.sh` — the .aar is a build artifact under
     // app/libs/, not a checked-in binary. Backends are decided by
     // deps/rclone-mobile/backends/backends.go, shared with the iOS build.
-    implementation(group = "", name = "rclone", ext = "aar")
+    // [T-rclone-optional] The gomobile AAR is a build artifact (needs Go +
+    // gomobile). Without it we compile src/rcloneStub so the rest of the app
+    // still builds; remote backup destinations stay unavailable.
+    val rcloneAar = file("libs/rclone.aar")
+    if (rcloneAar.isFile) {
+        implementation(group = "", name = "rclone", ext = "aar")
+    } else {
+        logger.lifecycle("rclone.aar missing — compiling rcloneStub")
+    }
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
