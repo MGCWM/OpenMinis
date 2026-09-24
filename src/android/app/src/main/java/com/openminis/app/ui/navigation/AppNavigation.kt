@@ -178,7 +178,6 @@ object Routes {
     const val MCP = "mcp"
     /** [T-soul-md] SOUL.md editor. */
     const val SOUL = "soul"
-    const val CHARACTER_EXTRAS = "character_extras"
     const val MEMORY_FILE_EDIT = "memory_file/{fileName}/{isGlobal}"
     const val PERMISSIONS = "permissions"
     /**
@@ -626,7 +625,6 @@ fun AppNavigation(
                 onAgentToolsClick = { navController.safeNavigate(Routes.AGENT_TOOLS) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
                 onSoulClick = { navController.safeNavigate(Routes.SOUL) },
-                onCharacterExtrasClick = { navController.safeNavigate(Routes.CHARACTER_EXTRAS) },
                 onPermissionsClick = { navController.safeNavigate(Routes.PERMISSIONS) },
                 onUsageClick = { navController.safeNavigate(Routes.USAGE_STATS) },
                 onAppearanceClick = { navController.safeNavigate(Routes.APPEARANCE) },
@@ -1368,12 +1366,6 @@ fun AppNavigation(
             com.openminis.app.ui.settings.SoulSettingsScreen(
                 onBack = { navController.safePopBackStack() },
                 providerRepository = providerRepository,
-            )
-        }
-
-        composable(Routes.CHARACTER_EXTRAS) {
-            com.openminis.app.ui.settings.CharacterExtrasScreen(
-                onBack = { navController.safePopBackStack() },
             )
         }
 

@@ -158,9 +158,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // [T-high-refresh] The app is a scrolling list of text; keep the
-        // panel at its highest mode instead of letting it idle down.
-        com.openminis.app.ui.HighRefreshRate.apply(this)
 
         // Register the crash-share "Save to..." launcher BEFORE the
         // safe-mode early-return below — ActivityResultLauncher must be
