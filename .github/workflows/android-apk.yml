@@ -38,14 +38,33 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # GitHub's runner image has the SDK but does not put sdkmanager on PATH,
+      # so locate it instead of assuming.
       - name: Android SDK components
         run: |
-          sdkmanager --install \
+          SDKMGR="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMGR" ]; then
+            SDKMGR="$(find "${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}" -name sdkmanager -type f 2>/dev/null | head -n 1)"
+          fi
+          if [ -z "$SDKMGR" ]; then
+            echo "sdkmanager not found — cannot install the SDK components" >&2
+            exit 1
+          fi
+          yes | "$SDKMGR" --install \
             "platforms;android-36" \
             "build-tools;34.0.0" \
             "cmake;3.22.1" \
             "ndk;${NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # proot's loader-info.awk uses strtonum(), a gawk extension. Ubuntu ships
+      # mawk as /usr/bin/awk, so the build fails with "function strtonum never
+      # defined" until gawk is installed and selected.
+      - name: awk with strtonum
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gawk
+          sudo update-alternatives --set awk /usr/bin/gawk
 
       - name: PRoot + talloc (aarch64)
         run: ./deps/build_proot.sh
