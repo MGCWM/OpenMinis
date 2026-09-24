@@ -1,27 +1,25 @@
-// [T-cn-mirrors] The Chinese mirrors below are a local-build convenience: they
+// [T-cn-mirrors] The Chinese Maven mirrors are a local-build convenience: they
 // are reachable from mainland China without a proxy, where the official
-// repositories are not. CI runs outside that network and can reach the official
-// repositories directly, so there the list is pointless overhead — and some
-// mirrors answer 404 for plugin markers that only exist on Maven Central, which
-// makes plugin resolution fail confusingly. Set MINIS_BUILD_MIRRORS=off to skip
-// them; google() / mavenCentral() / gradlePluginPortal() are always present.
-val cnMavenMirrors: List<String> =
-    if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() in listOf("off", "false", "0", "no")) {
-        emptyList()
-    } else {
-        listOf(
-            "https://maven.aliyun.com/repository/google",
-            "https://maven.aliyun.com/repository/public",
-            "https://maven.aliyun.com/repository/gradle-plugin",
-            "https://maven.aliyun.com/repository/central",
-            "https://repo.huaweicloud.com/repository/maven",
-            "https://mirrors.cloud.tencent.com/nexus/repository/maven-public",
-        )
-    }
+// repositories are not. CI runs outside that network, so it sets
+// MINIS_BUILD_MIRRORS=off and uses google() / mavenCentral() /
+// gradlePluginPortal() directly — some mirrors also answer 502 or 404 from
+// outside China, which turns plugin resolution into a confusing failure.
+//
+// The switch is inlined at each use site on purpose: a top-level val in this
+// script is not visible inside pluginManagement {}.
 
 pluginManagement {
     repositories {
-        cnMavenMirrors.forEach { u -> maven { url = uri(u) } }
+        if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() !in listOf("off", "false", "0", "no")) {
+            listOf(
+                "https://maven.aliyun.com/repository/google",
+                "https://maven.aliyun.com/repository/public",
+                "https://maven.aliyun.com/repository/gradle-plugin",
+                "https://maven.aliyun.com/repository/central",
+                "https://repo.huaweicloud.com/repository/maven",
+                "https://mirrors.cloud.tencent.com/nexus/repository/maven-public",
+            ).forEach { u -> maven { url = uri(u) } }
+        }
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -31,7 +29,16 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        cnMavenMirrors.forEach { u -> maven { url = uri(u) } }
+        if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() !in listOf("off", "false", "0", "no")) {
+            listOf(
+                "https://maven.aliyun.com/repository/google",
+                "https://maven.aliyun.com/repository/public",
+                "https://maven.aliyun.com/repository/gradle-plugin",
+                "https://maven.aliyun.com/repository/central",
+                "https://repo.huaweicloud.com/repository/maven",
+                "https://mirrors.cloud.tencent.com/nexus/repository/maven-public",
+            ).forEach { u -> maven { url = uri(u) } }
+        }
         google()
         mavenCentral()
         // [T-android-vad] RealTimeCutVADLibraryForAndroid ships via JitPack
