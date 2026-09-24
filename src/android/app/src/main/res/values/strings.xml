@@ -2342,4 +2342,19 @@
     <string name="rootfs_dns_saved">Saved and applied</string>
     <string name="rootfs_dns_effective_system">In effect: system DNS</string>
     <string name="rootfs_dns_effective_custom">In effect: %1$s</string>
+    <string name="settings_character_extras">World book</string>
+    <string name="character_extras_confirm_body">Remove this entry? This does not change the standing persona file or messages already sent.</string>
+    <string name="character_extras_confirm_remove">Remove</string>
+    <string name="character_extras_tap_remove">tap to remove</string>
+    <string name="display_regex_header">Display regex</string>
+    <string name="display_regex_footer">Rewrites the chat bubble only. The stored message and the text sent to the model stay unchanged. Tap a rule to remove it.</string>
+    <string name="display_regex_pattern">Pattern</string>
+    <string name="display_regex_replacement">Replacement</string>
+    <string name="display_regex_add">Add rule</string>
+    <string name="world_book_header">World book</string>
+    <string name="world_book_footer">An entry is injected only when a recent message contains one of its keywords. Tap an entry to remove it. The standing persona file is unchanged.</string>
+    <string name="world_book_name">Name</string>
+    <string name="world_book_keywords">Keywords, comma separated</string>
+    <string name="world_book_content">Text to inject when a keyword matches</string>
+    <string name="world_book_add">Add entry</string>
 </resources>
