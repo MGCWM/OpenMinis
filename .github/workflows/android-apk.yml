@@ -29,8 +29,9 @@ jobs:
       GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
       # Runners live outside the GFW: use the official repositories rather than
       # the Chinese mirrors a local build needs. Some mirrors also answer 404
-      # for plugin markers that only exist on Maven Central.
-      MINIS_BUILD_MIRRORS: off
+      # for plugin markers that only exist on Maven Central. Quoted on purpose:
+      # bare `off` is a YAML 1.1 boolean and does not survive as a string.
+      MINIS_BUILD_MIRRORS: "off"
 
     steps:
       - uses: actions/checkout@v4

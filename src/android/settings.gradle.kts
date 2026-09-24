@@ -6,7 +6,7 @@
 // makes plugin resolution fail confusingly. Set MINIS_BUILD_MIRRORS=off to skip
 // them; google() / mavenCentral() / gradlePluginPortal() are always present.
 val cnMavenMirrors: List<String> =
-    if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() == "off") {
+    if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() in listOf("off", "false", "0", "no")) {
         emptyList()
     } else {
         listOf(
