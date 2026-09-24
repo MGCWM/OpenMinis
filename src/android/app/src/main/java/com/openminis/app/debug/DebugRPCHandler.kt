@@ -229,8 +229,27 @@ class DebugRPCHandler(private val context: Context) {
 
     private fun dirSize(dir: File): Long {
         if (!dir.exists()) return 0
-        return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        var n = 0L
+        val stack = ArrayDeque<File>()
+        stack.addLast(dir)
+        while (stack.isNotEmpty()) {
+            val children = stack.removeLast().listFiles() ?: continue
+            for (child in children) {
+                if (isSymlink(child)) continue
+                if (child.isDirectory) stack.addLast(child) else n += child.length()
+            }
+        }
+        return n
     }
+
+    /** Symlinks are skipped so a link out of the tree is not counted at target size. */
+    private fun isSymlink(file: File): Boolean =
+        try {
+            java.nio.file.Files.isSymbolicLink(file.toPath())
+        } catch (_: Throwable) {
+            false
+        }
+
 
     // ── Screenshot ──────────────────────────────────────────────────────────
 

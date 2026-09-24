@@ -357,14 +357,37 @@ private fun StorageOverviewRow(
     }
 }
 
+/**
+ * Sum the real bytes under [dir], never following symbolic links.
+ *
+ * `walkTopDown()` treats a link-to-directory as a directory, so a single link
+ * pointing outside the tree (shared storage, for instance) was counted at its
+ * full target size: the shell container read ~25x larger than the app's actual
+ * data footprint. Symlinks are skipped, matching `du`'s default.
+ */
 private fun directorySize(dir: File): Long {
     if (!dir.exists()) return 0L
     var total = 0L
-    dir.walkTopDown().forEach { file ->
-        if (file.isFile) total += file.length()
+    val stack = ArrayDeque<File>()
+    stack.addLast(dir)
+    while (stack.isNotEmpty()) {
+        val children = stack.removeLast().listFiles() ?: continue
+        for (child in children) {
+            if (isSymlink(child)) continue
+            if (child.isDirectory) stack.addLast(child) else total += child.length()
+        }
     }
     return total
 }
+
+private fun isSymlink(file: File): Boolean =
+    try {
+        java.nio.file.Files.isSymbolicLink(file.toPath())
+    } catch (_: Throwable) {
+        false
+    }
+
+
 
 private fun databaseSize(context: Context): Long {
     val dbFile = context.getDatabasePath("minis.db")

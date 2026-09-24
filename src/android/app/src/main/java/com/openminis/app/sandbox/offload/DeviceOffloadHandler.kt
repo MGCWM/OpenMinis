@@ -138,9 +138,26 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
 
     private fun dirSize(dir: File): Long {
         var n = 0L
-        dir.walkTopDown().forEach { if (it.isFile) n += it.length() }
+        val stack = ArrayDeque<File>()
+        stack.addLast(dir)
+        while (stack.isNotEmpty()) {
+            val children = stack.removeLast().listFiles() ?: continue
+            for (child in children) {
+                if (isSymlink(child)) continue
+                if (child.isDirectory) stack.addLast(child) else n += child.length()
+            }
+        }
         return n
     }
+
+    /** Symlinks are skipped so a link out of the tree is not counted at target size. */
+    private fun isSymlink(file: File): Boolean =
+        try {
+            java.nio.file.Files.isSymbolicLink(file.toPath())
+        } catch (_: Throwable) {
+            false
+        }
+
 
     companion object {
         private const val HELP = """android-device — device model, OS, battery, storage (JSON)

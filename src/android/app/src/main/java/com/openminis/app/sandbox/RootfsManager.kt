@@ -233,18 +233,32 @@ class RootfsManager private constructor(private val context: Context) {
         Log.i(TAG, "User data restored from $backupDir")
     }
 
+    /**
+     * Sum the real bytes under [dir] without following symbolic links. The
+     * rootfs ships links (etc/alternatives, systemd wants) and the guest can
+     * create more; following one that points outside the tree counted its
+     * target at full size, so the reported container size was wildly wrong.
+     */
     private fun calculateDirSize(dir: File): Long {
         var total = 0L
-        val files = dir.listFiles() ?: return 0L
-        for (file in files) {
-            total += if (file.isDirectory) {
-                calculateDirSize(file)
-            } else {
-                file.length()
+        val stack = ArrayDeque<File>()
+        stack.addLast(dir)
+        while (stack.isNotEmpty()) {
+            val files = stack.removeLast().listFiles() ?: continue
+            for (file in files) {
+                if (isSymlink(file)) continue
+                if (file.isDirectory) stack.addLast(file) else total += file.length()
             }
         }
         return total
     }
+
+    private fun isSymlink(file: File): Boolean =
+        try {
+            java.nio.file.Files.isSymbolicLink(file.toPath())
+        } catch (_: Throwable) {
+            false
+        }
 
     /**
      * Ensure session-specific directories exist on the host filesystem.
