@@ -67,11 +67,19 @@ jobs:
           mkdir -p src/android/app/libs
           cp deps/build/rclone/rclone.aar src/android/app/libs/rclone.aar
 
-      - name: Signing key
+      # NOTE: `secrets` cannot appear in a step-level `if:` — GitHub rejects the
+      # whole workflow file ("Unrecognized named-value: 'secrets'"). Ask inside
+      # the script instead, and pass the secret through env so it stays masked.
+      - name: Signing key (optional)
         id: signing
-        if: ${{ secrets.MINIS_UPLOAD_STORE_BASE64 != '' }}
+        env:
+          STORE_B64: ${{ secrets.MINIS_UPLOAD_STORE_BASE64 }}
         run: |
-          echo "${{ secrets.MINIS_UPLOAD_STORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
+          if [ -z "$STORE_B64" ]; then
+            echo "No signing key configured — assembleRelease will use the debug keystore."
+            exit 0
+          fi
+          echo "$STORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "store=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
 
       - name: assembleRelease
