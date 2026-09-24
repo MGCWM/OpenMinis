@@ -31,13 +31,14 @@ android {
     // Android 16 behavior changes; the Live Updates path is runtime-gated on
     // Build.VERSION.SDK_INT >= 36 (see DynamicIslandSupport / AgentForegroundService).
     compileSdk = 36
+    ndkVersion = "28.0.13004108"
 
     defaultConfig {
-        applicationId = "com.openminis.linux"
+        applicationId = "com.openminis.ubuntu"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "1.13-linux"
+        versionCode = 1301
+        versionName = "1.13-ubuntu"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
