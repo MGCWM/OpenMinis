@@ -1,0 +1,86 @@
+name: android-apk
+
+# Builds the Android-only fork (official 1.13 + Ubuntu guest + persona) and
+# uploads the signed-or-debug APK. Everything the app needs at runtime that is
+# not committed (proot, the Ubuntu rootfs, the rclone gomobile binding) is
+# produced here, in the same order the local build uses.
+#
+# Signing: set repo secrets MINIS_UPLOAD_STORE_BASE64, MINIS_UPLOAD_STORE_PASSWORD,
+# MINIS_UPLOAD_KEY_ALIAS, MINIS_UPLOAD_KEY_PASSWORD to get a properly signed
+# release. Without them the build still succeeds and ships a debug-signed APK.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      NDK_VERSION: 28.0.13004108
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Android SDK components
+        run: |
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;34.0.0" \
+            "cmake;3.22.1" \
+            "ndk;${NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: PRoot + talloc (aarch64)
+        run: ./deps/build_proot.sh
+
+      - name: Ubuntu rootfs + baked CA trust store
+        run: ./scripts/prepare_android_sandbox.sh
+
+      - name: Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: rclone gomobile binding
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/gomobile" init
+          ./deps/build_rclone_android.sh
+          mkdir -p src/android/app/libs
+          cp deps/build/rclone/rclone.aar src/android/app/libs/rclone.aar
+
+      - name: Signing key
+        id: signing
+        if: ${{ secrets.MINIS_UPLOAD_STORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.MINIS_UPLOAD_STORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "store=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+
+      - name: assembleRelease
+        env:
+          MINIS_UPLOAD_STORE_FILE: ${{ steps.signing.outputs.store }}
+          MINIS_UPLOAD_STORE_PASSWORD: ${{ secrets.MINIS_UPLOAD_STORE_PASSWORD }}
+          MINIS_UPLOAD_KEY_ALIAS: ${{ secrets.MINIS_UPLOAD_KEY_ALIAS }}
+          MINIS_UPLOAD_KEY_PASSWORD: ${{ secrets.MINIS_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew -p src/android assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minis-ubuntu-apk
+          path: src/android/app/build/outputs/apk/release/*.apk
