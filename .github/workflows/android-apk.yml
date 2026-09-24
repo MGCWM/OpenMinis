@@ -102,12 +102,13 @@ jobs:
           echo "store=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
 
       - name: assembleRelease
+        working-directory: src/android
         env:
           MINIS_UPLOAD_STORE_FILE: ${{ steps.signing.outputs.store }}
           MINIS_UPLOAD_STORE_PASSWORD: ${{ secrets.MINIS_UPLOAD_STORE_PASSWORD }}
           MINIS_UPLOAD_KEY_ALIAS: ${{ secrets.MINIS_UPLOAD_KEY_ALIAS }}
           MINIS_UPLOAD_KEY_PASSWORD: ${{ secrets.MINIS_UPLOAD_KEY_PASSWORD }}
-        run: ./gradlew -p src/android assembleRelease --no-daemon
+        run: ./gradlew assembleRelease --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
