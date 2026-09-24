@@ -69,6 +69,24 @@ android {
         }
     }
 
+    // [T-upload-signing] Sign release builds with the upload key when
+    // MINIS_UPLOAD_* is set (CI passes it from repository secrets) and fall
+    // back to the debug key otherwise. Upstream 1.13 hard-wired the release
+    // build type to the debug keystore, so every artifact had to be re-signed
+    // by hand before it could update an existing install in place.
+    val uploadStorePath = System.getenv("MINIS_UPLOAD_STORE_FILE")
+        ?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (uploadStorePath != null) {
+            create("upload") {
+                storeFile = file(uploadStorePath)
+                storePassword = System.getenv("MINIS_UPLOAD_STORE_PASSWORD")
+                keyAlias = System.getenv("MINIS_UPLOAD_KEY_ALIAS")
+                keyPassword = System.getenv("MINIS_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -76,7 +94,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (uploadStorePath != null) {
+                signingConfigs.getByName("upload")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
