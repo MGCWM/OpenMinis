@@ -545,7 +545,7 @@ class WebAppActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_SHORTCUT_ID = "webapp_shortcut_id"
-        const val ACTION_OPEN_WEBAPP = "com.openminis.linux.action.OPEN_WEBAPP"
+        const val ACTION_OPEN_WEBAPP = "com.openminis.ubuntu.action.OPEN_WEBAPP"
         const val EXTRA_TARGET_SESSION_ID = "target_session_id"
         private const val ASSET_LOADER_HOST = "appassets.androidplatform.net"
         private const val AUTO_HIDE_MS = 4000L

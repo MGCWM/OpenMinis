@@ -1976,4 +1976,19 @@
     <!-- [T-android-compact-progress] Live status while a compaction runs. -->
     <string name="compact_progress">Compacting… %1$d s elapsed</string>
     <string name="compact_progress_split">Compacting… %1$d s · summarizing in segments (%2$d/%3$d)</string>
+    <string name="settings_character_extras">World book</string>
+    <string name="character_extras_confirm_body">Remove this entry? This does not change the standing persona file or messages already sent.</string>
+    <string name="character_extras_confirm_remove">Remove</string>
+    <string name="character_extras_tap_remove">tap to remove</string>
+    <string name="display_regex_header">Display regex</string>
+    <string name="display_regex_footer">Rewrites the chat bubble only. The stored message and the text sent to the model stay unchanged. Tap a rule to remove it.</string>
+    <string name="display_regex_pattern">Pattern</string>
+    <string name="display_regex_replacement">Replacement</string>
+    <string name="display_regex_add">Add rule</string>
+    <string name="world_book_header">World book</string>
+    <string name="world_book_footer">An entry is injected only when a recent message contains one of its keywords. Tap an entry to remove it. The standing persona file is unchanged.</string>
+    <string name="world_book_name">Name</string>
+    <string name="world_book_keywords">Keywords, comma separated</string>
+    <string name="world_book_content">Text to inject when a keyword matches</string>
+    <string name="world_book_add">Add entry</string>
 </resources>

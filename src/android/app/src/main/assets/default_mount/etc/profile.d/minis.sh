@@ -48,3 +48,12 @@ for _jdk in /usr/lib/jvm/java-21-openjdk-arm64 /usr/lib/jvm/java-17-openjdk-arm6
   fi
 done
 unset _jdk
+
+# [T-firstboot] Install a small core toolchain once. The guest rootfs lives in
+# app-private storage, so uninstalling or clearing the app wipes it; this makes
+# a fresh install usable without the user re-running minis-dev-setup by hand.
+# Backgrounded on purpose — a shell must never block on apt. Heavy extras
+# (gcc, jdk, ffmpeg, gradle) stay opt-in via minis-dev-setup.
+if [ ! -f /var/lib/minis-firstboot.done ] && [ -x /usr/local/bin/minis-firstboot ]; then
+    ( /usr/local/bin/minis-firstboot >/dev/null 2>&1 & )
+fi

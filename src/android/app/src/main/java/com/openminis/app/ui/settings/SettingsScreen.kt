@@ -89,6 +89,8 @@ fun SettingsScreen(
     // Agent Runtime section; default no-op for callers that haven't wired
     // the route yet.
     onSoulClick: () -> Unit = {},
+    // [T-character-extras] World book + display regex page.
+    onCharacterExtrasClick: () -> Unit = {},
     onPermissionsClick: () -> Unit = {},
     onUsageClick: () -> Unit = {},
     onAppearanceClick: () -> Unit = {},
@@ -188,6 +190,15 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_soul),
                     subtitle = stringResource(R.string.settings_soul_subtitle),
                     onClick = onSoulClick,
+                )
+                // [T-character-extras] World book entries and display regex
+                // live on their own page next to the persona settings.
+                SettingsItem(
+                    icon = Icons.Outlined.Extension,
+                    iconColor = Color(0xFF34C759),
+                    title = stringResource(R.string.settings_character_extras),
+                    subtitle = stringResource(R.string.world_book_footer),
+                    onClick = onCharacterExtrasClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.Psychology,

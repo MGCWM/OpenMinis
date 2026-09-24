@@ -1,0 +1,50 @@
+#!/bin/sh
+# First-boot provisioning for the Minis Ubuntu guest.
+#
+# Why this exists: the guest rootfs is app-private data, so uninstalling or
+# clearing the app wipes the toolchain the user installed. Rather than making
+# them re-run minis-dev-setup by hand, install a small core set once on first
+# boot. The heavy extras (gcc, jdk, ffmpeg, gradle) stay opt-in via
+# minis-dev-setup.
+#
+# Idempotent: a marker written only on success means a failed run (offline,
+# dpkg busy) simply retries on the next boot.
+
+MARKER=/var/lib/minis-firstboot.done
+LOG=/var/log/minis-firstboot.log
+LOCK=/var/lib/minis-firstboot.lock
+
+[ -f "$MARKER" ] && exit 0
+
+# atomic "already running?" guard — mkdir fails if another instance holds it
+if ! mkdir "$LOCK" 2>/dev/null; then
+    exit 0
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM
+
+export TMPDIR=/tmp TMP=/tmp TEMP=/tmp DEBIAN_FRONTEND=noninteractive
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+mkdir -p /tmp /var/tmp /var/lib /var/log
+chmod 1777 /tmp /var/tmp 2>/dev/null || true
+
+{
+    echo "== minis first-boot provisioning: $(date)"
+    if ! apt-get update -qq; then
+        echo "!! apt-get update failed — will retry on the next boot"
+        exit 1
+    fi
+    if ! apt-get install -y --no-install-recommends \
+            ca-certificates python3 python3-pip git curl wget unzip make; then
+        echo "!! install failed — will retry on the next boot"
+        exit 1
+    fi
+    update-ca-certificates || true
+    echo "== done: $(date)"
+} >> "$LOG" 2>&1
+
+if [ $? -eq 0 ]; then
+    touch "$MARKER"
+    echo "first-boot provisioning complete (see $LOG)"
+fi
+exit 0
