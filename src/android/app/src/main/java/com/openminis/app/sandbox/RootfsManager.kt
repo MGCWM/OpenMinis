@@ -336,6 +336,17 @@ class RootfsManager private constructor(private val context: Context) {
                 deb822.delete()
             }
         }
+        // [T-guest-tmpdir] The guest's own temp dirs must exist and be
+        // writable — every shell command inherits TMPDIR=/tmp from the app
+        // (see PRootKernel), and tools that drop privileges still need them.
+        for (rel in listOf("tmp", "var/tmp")) {
+            val dir = File(rootfsDir, rel)
+            if (!dir.exists()) dir.mkdirs()
+            dir.setReadable(true, false)
+            dir.setWritable(true, false)
+            dir.setExecutable(true, false)
+        }
+
         val hosts = File(rootfsDir, "etc/hosts")
         if (!hosts.exists() || hosts.length() < 8) {
             hosts.parentFile?.mkdirs()

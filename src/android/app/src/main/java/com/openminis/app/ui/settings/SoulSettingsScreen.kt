@@ -245,7 +245,12 @@ fun SoulSettingsScreen(
 
     // Language-aware length check used by both the editor counter and the
     // Save button's enabled state. See [SoulStore.isOverLimit] for the rule.
-    val bodyLimitCheck by remember(body) { derivedStateOf { SoulStore.isOverLimit(body) } }
+    // [T-soul-limit] The personality body is edited on the prompt page now;
+    // keep the guard by deriving the current body from the snapshot.
+    val bodyForLimit = pendingRestoreBody ?: baseline?.body.orEmpty()
+    val bodyLimitCheck by remember(bodyForLimit) {
+        derivedStateOf { SoulStore.isOverLimit(bodyForLimit) }
+    }
 
     val currentFile = SoulFile(
         metadata = SoulMetadata(
@@ -258,7 +263,7 @@ fun SoulSettingsScreen(
         body = pendingRestoreBody ?: baseline?.body.orEmpty(),
     )
     val isDirty = loaded && baseline != null && (
-        currentFile.metadata != baseline.metadata || pendingRestoreBody != null
+        currentFile.metadata != baseline?.metadata || pendingRestoreBody != null
     )
     var showDiscardDialog by remember { mutableStateOf(false) }
 

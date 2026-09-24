@@ -101,6 +101,21 @@ object PRootKernel {
         customEnvironment.putIfAbsent("ANDROID_SDK_ROOT", "/opt/android-sdk")
         customEnvironment.putIfAbsent("HOME", "/root")
 
+        // [T-guest-tmpdir] The guest inherits Android's TMPDIR (the app cache
+        // path), which does not exist inside the guest at all. mktemp then
+        // fails, dpkg aborts mid-unpack and apt installs break with confusing
+        // errors. Pin the temp dirs to the guest's own /tmp — forced, not
+        // putIfAbsent, because the inherited value is the broken one.
+        customEnvironment["TMPDIR"] = "/tmp"
+        customEnvironment["TMP"] = "/tmp"
+        customEnvironment["TEMP"] = "/tmp"
+
+        // [T-guest-ca] Point TLS consumers (curl, git, pip) at the guest
+        // trust store so certificate verification succeeds instead of
+        // failing every request. The bundle ships pre-baked in the rootfs.
+        customEnvironment["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["CURL_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+
         // URL interception: seed $BROWSER directly into every process envp
         // so non-login shells (which never source /etc/profile.d/minis.sh)
         // still route webbrowser.open()/etc into the host OpenOffloadHandler.

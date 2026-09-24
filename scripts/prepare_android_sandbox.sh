@@ -62,4 +62,9 @@ if [ -f "$SDK_TOOLS_ZIP" ]; then
   ls -lh "$SDK_TOOLS_ZIP"
 fi
 
+# The stock Canonical tarball ships without ca-certificates, so the guest would
+# start with no trust store and every TLS verification would fail. Bake one in.
+echo "==> Baking a CA trust store into the guest rootfs"
+bash "$ROOT/scripts/bake_guest_ca.sh" "$ASSETS/ubuntu-base.tar.gz"
+
 echo "==> Android sandbox assets ready (Ubuntu ${UBUNTU_CODENAME})"
