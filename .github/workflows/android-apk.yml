@@ -27,6 +27,10 @@ jobs:
       ANDROID_HOME: /usr/local/lib/android/sdk
       NDK_VERSION: 28.0.13004108
       GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+      # Runners live outside the GFW: use the official repositories rather than
+      # the Chinese mirrors a local build needs. Some mirrors also answer 404
+      # for plugin markers that only exist on Maven Central.
+      MINIS_BUILD_MIRRORS: off
 
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +104,22 @@ jobs:
           fi
           echo "$STORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "store=$RUNNER_TEMP/release.jks" >> "$GITHUB_OUTPUT"
+
+      # The Gradle plugin markers (KSP) live on Maven Central / the plugin
+      # portal, not on Google's maven. Record what this runner can actually
+      # reach so a resolution failure is diagnosable from the log alone.
+      - name: Probe plugin repositories
+        run: |
+          MARKER=com/google/devtools/ksp/com.google.devtools.ksp.gradle.plugin/2.1.0-1.0.29/com.google.devtools.ksp.gradle.plugin-2.1.0-1.0.29.pom
+          for base in \
+            https://repo.maven.apache.org/maven2 \
+            https://plugins.gradle.org/m2 \
+            https://dl.google.com/dl/android/maven2 \
+            https://maven.aliyun.com/repository/gradle-plugin \
+            https://mirrors.cloud.tencent.com/nexus/repository/maven-public ; do
+            printf '%-58s ' "$(echo "$base" | cut -d/ -f3)"
+            curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 "$base/$MARKER" || echo unreachable
+          done
 
       - name: assembleRelease
         working-directory: src/android

@@ -1,12 +1,27 @@
+// [T-cn-mirrors] The Chinese mirrors below are a local-build convenience: they
+// are reachable from mainland China without a proxy, where the official
+// repositories are not. CI runs outside that network and can reach the official
+// repositories directly, so there the list is pointless overhead — and some
+// mirrors answer 404 for plugin markers that only exist on Maven Central, which
+// makes plugin resolution fail confusingly. Set MINIS_BUILD_MIRRORS=off to skip
+// them; google() / mavenCentral() / gradlePluginPortal() are always present.
+val cnMavenMirrors: List<String> =
+    if ((System.getenv("MINIS_BUILD_MIRRORS") ?: "on").lowercase() == "off") {
+        emptyList()
+    } else {
+        listOf(
+            "https://maven.aliyun.com/repository/google",
+            "https://maven.aliyun.com/repository/public",
+            "https://maven.aliyun.com/repository/gradle-plugin",
+            "https://maven.aliyun.com/repository/central",
+            "https://repo.huaweicloud.com/repository/maven",
+            "https://mirrors.cloud.tencent.com/nexus/repository/maven-public",
+        )
+    }
+
 pluginManagement {
     repositories {
-        // [T-cn-mirrors] Reachable from mainland China without a proxy.
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-        maven { url = uri("https://maven.aliyun.com/repository/central") }
-        maven { url = uri("https://repo.huaweicloud.com/repository/maven") }
-        maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public") }
+        cnMavenMirrors.forEach { u -> maven { url = uri(u) } }
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -16,13 +31,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // [T-cn-mirrors] Reachable from mainland China without a proxy.
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
-        maven { url = uri("https://maven.aliyun.com/repository/central") }
-        maven { url = uri("https://repo.huaweicloud.com/repository/maven") }
-        maven { url = uri("https://mirrors.cloud.tencent.com/nexus/repository/maven-public") }
+        cnMavenMirrors.forEach { u -> maven { url = uri(u) } }
         google()
         mavenCentral()
         // [T-android-vad] RealTimeCutVADLibraryForAndroid ships via JitPack
