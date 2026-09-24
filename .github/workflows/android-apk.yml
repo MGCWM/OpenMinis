@@ -131,6 +131,15 @@ jobs:
           MINIS_UPLOAD_KEY_PASSWORD: ${{ secrets.MINIS_UPLOAD_KEY_PASSWORD }}
         run: ./gradlew assembleRelease --no-daemon
 
+      # Prove which key actually signed the artifact — the fingerprint must be
+      # the upload key's, not the debug one, or in-place updates break.
+      - name: Verify the APK signature
+        working-directory: src/android
+        run: |
+          APK="$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)"
+          echo "artifact: $APK"
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --print-certs "$APK"
+
       - uses: actions/upload-artifact@v4
         with:
           name: minis-ubuntu-apk
