@@ -122,9 +122,12 @@ jobs:
             curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 "$base/$MARKER" || echo unreachable
           done
 
-      - name: Unit tests (endpoint-declared effort tiers)
+      - name: Unit tests (thinking / effort resolution)
         working-directory: src/android
-        run: ./gradlew testDebugUnitTest --no-daemon --tests 'com.openminis.app.provider.EndpointDeclaredEffortTiersTest'
+        run: |
+          ./gradlew testDebugUnitTest --no-daemon \
+            --tests 'com.openminis.app.provider.EndpointDeclaredEffortTiersTest' \
+            --tests 'com.openminis.app.provider.thinking.*'
 
       - name: assembleRelease
         working-directory: src/android

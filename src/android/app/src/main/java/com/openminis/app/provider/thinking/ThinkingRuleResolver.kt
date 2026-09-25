@@ -495,13 +495,101 @@ object ThinkingRuleResolver {
                 null to null
             }
 
+            // ---- User-authored escape hatches (were declared but not emitted) ----
+            //
+            // These three formats are the ones a user can pick in the rule editor.
+            // They used to fall through to the `else` below and THROW, so every
+            // rule using one of them failed the request instead of shaping it —
+            // the editor offered options the emitter could not produce. Each one
+            // now degrades to "no opinion" (emit nothing) on anything it cannot
+            // express, which is the same contract ThinkingRuleCoding uses when it
+            // meets a row it cannot decode.
+
+            is ThinkingWireFormat.BooleanToggle -> {
+                // A plain boolean switch, no tiers: on while thinking is on, off
+                // while it is off. There is nothing to clamp — the endpoint either
+                // takes the switch or the rule is wrong for it.
+                val on = ctx.level.isEnabled
+                if (!putAtPath(body, format.path.ifBlank { "thinking" }, on)) return null to null
+                null to null
+            }
+
+            is ThinkingWireFormat.ExtraBodyToggle -> {
+                // The same switch, nested under `extra_body` — DeepSeek's official
+                // endpoint reads its real switch there (GH OpenMinis#171) and
+                // vLLM/SGLang accept the shape. A path that already spells out the
+                // wrapper is accepted too, so "extra_body.thinking.enabled" and
+                // "thinking.enabled" mean the same thing.
+                val on = ctx.level.isEnabled
+                val typed = format.path.ifBlank { "thinking.enabled" }
+                val relative = typed.removePrefix("extra_body.").ifBlank { "thinking.enabled" }
+                val existing = body.optJSONObject("extra_body")
+                val extra = when {
+                    existing != null -> existing
+                    body.has("extra_body") -> return null to null // non-object: never clobber
+                    else -> JSONObject().also { body.put("extra_body", it) }
+                }
+                if (!putAtPath(extra, relative, on)) return null to null
+                null to null
+            }
+
+            is ThinkingWireFormat.CustomPath -> {
+                // Escape hatch: one dotted path plus the value to put there. The
+                // editor only asks for the HIGH value, so the requested level is
+                // clamped onto the tiers the user actually filled in — walking
+                // DOWN then up, exactly like clampEffort — which is what makes a
+                // single-field rule still answer for 低/中/超高/极高 instead of
+                // silently emitting nothing.
+                if (!ctx.level.isEnabled) {
+                    val off = format.offValue ?: return null to null
+                    return if (putAtPath(body, format.path, off)) off to off else null to null
+                }
+                val value = format.values[ctx.level]
+                    ?: format.values.entries
+                        .filter { it.key.rank <= ctx.level.rank }
+                        .maxByOrNull { it.key.rank }?.value
+                    ?: format.values.entries.minByOrNull { it.key.rank }?.value
+                    ?: return null to null
+                return if (putAtPath(body, format.path, value)) value to value else null to null
+            }
+
             else -> {
-                // Phase 1: declared for vocabulary completeness, never resolved to on this
-                // path. Reaching here means the registry named a format the OpenAI emitter
-                // cannot produce — a programmer error, not a runtime condition.
-                error("ThinkingWireFormat $format is not emitted on the OpenAI path in Phase 1")
+                // Declared for vocabulary completeness but owned by another
+                // emitter: Anthropic and Gemini build their own thinking object
+                // (see the shape functions below), so nothing on THIS path may
+                // resolve to them. Reaching here means the registry named a format
+                // the OpenAI emitter cannot produce — a programmer error, not a
+                // runtime condition.
+                error("ThinkingWireFormat $format is not emitted on the OpenAI path")
             }
         }
+    }
+
+    /**
+     * Write [value] at a dotted [path], creating intermediate objects as needed.
+     *
+     * Returns false — "no opinion" — when the path cannot be used: blank, made of
+     * empty segments, or blocked by an intermediate key that already holds
+     * something other than an object. That last case is the important one: the
+     * body being mutated is a real request (model / messages / tools / …), and a
+     * hand-typed path must never overwrite one of those with an object.
+     */
+    private fun putAtPath(body: JSONObject, path: String, value: Any): Boolean {
+        val parts = path.split('.').map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.isEmpty()) return false
+        var node = body
+        for (i in 0 until parts.size - 1) {
+            val key = parts[i]
+            val child = node.optJSONObject(key)
+            if (child != null) {
+                node = child
+                continue
+            }
+            if (node.has(key)) return false // occupied by a scalar/array — never clobber
+            node = JSONObject().also { node.put(key, it) }
+        }
+        node.put(parts.last(), value)
+        return true
     }
 
     // ---- Gemini / Anthropic (Phase 2 §1) ----
