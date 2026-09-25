@@ -73,6 +73,20 @@ object OpenAIModelsApi {
         ),
     )
 
+    /**
+     * [T-reasoning-effort-endpoint-declared] The wire values `reasoning_effort`
+     * accepts, in the same order [com.openminis.app.provider.thinking.ThinkingRuleResolver]'s
+     * clamp ladder uses.
+     *
+     * Endpoint-declared tiers are filtered through this set before they are
+     * stored, because an unrecognized token is worse than no token at all:
+     * `clampEffort` maps the declared list onto the ladder, and a list made
+     * ONLY of unknown values resolves to an empty ladder — which makes the
+     * clamp pass the request through unclamped, exactly the bug it exists to
+     * prevent.
+     */
+    private val EFFORT_LADDER = setOf("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
     // Chat-capable model prefixes (matching iOS)
     private val chatPrefixes = listOf("gpt-", "o1", "o3", "o4-", "codex-", "chatgpt-")
 
@@ -147,6 +161,34 @@ object OpenAIModelsApi {
                 val inputModalities = arch?.optJSONArray("input_modalities")?.toStringList().normalizeModalities()
                 val outputModalities = arch?.optJSONArray("output_modalities")?.toStringList().normalizeModalities()
 
+                // [T-reasoning-effort-endpoint-declared] OpenAI-compatible
+                // gateways may publish, right in /v1/models, which effort tiers
+                // a model actually accepts (the wb2api / WorkBuddy panel does):
+                //   "reasoning_supported_efforts": ["low","high","max"]
+                //   "reasoning_default_effort":    "high"
+                //   "supports_reasoning":          true
+                //
+                // This is per-INSTANCE truth: the same model id caps at "high"
+                // behind one route and reaches "max" behind another, and neither
+                // the bundled models.dev snapshot (keyed by exact model id, so
+                // it never matches a prefixed relay id like `cn:foo`) nor the
+                // id-substring catalog in ThinkingLevelCatalog can see that.
+                // The precedence that lets it win lives in
+                // ModelsDevApi.applyDevData.
+                //
+                // Absent on official OpenAI and on every endpoint that does not
+                // publish it, so their parsing stays byte-for-byte unchanged.
+                val declaredTiers = obj.optJSONArray("reasoning_supported_efforts")
+                    ?.toStringList()
+                    ?.map { it.trim().lowercase() }
+                    ?.filter { it in EFFORT_LADDER }
+                    ?.distinct()
+                    ?.takeIf { it.isNotEmpty() }
+                // Only an affirmative answer is taken: a gateway that omits the
+                // flag, or a `false` from one that disagrees with models.dev,
+                // must not switch a working thinking toggle off.
+                val endpointReasons = obj.optBoolean("supports_reasoning", false)
+
                 // T119: known reasoning families (GPT-5.x, o-series, Codex
                 // Mini) get supportsReasoning pre-set to true so the
                 // Thinking pill enables before models.dev enrichment lands
@@ -167,7 +209,14 @@ object OpenAIModelsApi {
                         provider = if (isCustomBase) "Custom" else "OpenAI",
                         inputModalities = inputModalities,
                         outputModalities = outputModalities,
-                        supportsReasoning = if (knownReasoning) true else null,
+                        supportsReasoning = if (
+                            endpointReasons || declaredTiers != null || knownReasoning
+                        ) true else null,
+                        // [T-reasoning-effort-endpoint-declared] The tiers this
+                        // instance declared. Non-null here means the picker can
+                        // offer exactly them and the request builder will clamp
+                        // onto them; null keeps the previous fallback chain.
+                        reasoningEffortValues = declaredTiers,
                     )
                 )
             }

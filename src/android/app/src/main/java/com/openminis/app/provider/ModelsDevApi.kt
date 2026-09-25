@@ -147,7 +147,16 @@ object ModelsDevApi {
             interleavedReasoningField = devModel.interleavedField ?: model.interleavedReasoningField,
             inputModalities = devModel.inputModalities ?: model.inputModalities,
             outputModalities = devModel.outputModalities ?: model.outputModalities,
-            reasoningEffortValues = devModel.reasoningEffortValues ?: model.reasoningEffortValues,
+            // [T-reasoning-effort-endpoint-declared] The endpoint's own
+            // declaration outranks the bundled catalog. /v1/models describes
+            // THIS instance right now — the same model id caps at "high" behind
+            // one relay and reaches "max" behind another — whereas models.dev
+            // is a per-vendor snapshot that can be stale, can describe a
+            // different host, or may never have heard of the id at all.
+            //
+            // Catalog data still fills the gap whenever the endpoint is silent
+            // (null/empty), which is what every official endpoint relies on.
+            reasoningEffortValues = model.reasoningEffortValues ?: devModel.reasoningEffortValues,
             // [OpenMinis#163] Only carry the AFFIRMATIVE answer forward, so
             // enriching against an entry the catalog is silent about cannot
             // overwrite a prior real answer with a meaningless `false`.

@@ -32,7 +32,7 @@ internal class ProviderModelsCache(
 
     private fun keyFile(context: Context, cacheKey: String): File {
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest(cacheKey.toByteArray(Charsets.UTF_8))
+            .digest("$SCHEMA|$cacheKey".toByteArray(Charsets.UTF_8))
         val hex = digest.joinToString("") { "%02x".format(it) }
         return File(cacheDir(context), "$hex.json")
     }
@@ -59,6 +59,19 @@ internal class ProviderModelsCache(
 
     companion object {
         const val DEFAULT_TTL_MS = 7L * 24 * 3600 * 1000
+
+        /**
+         * Bump whenever a persisted [LLMModel] gains a field that has to be
+         * re-derived from the endpoint — SCHEMA 2 added the endpoint-declared
+         * effort tiers (`reasoning_supported_efforts`).
+         *
+         * Without it a cache written by the previous build keeps being served
+         * for up to seven days, the new field never appears, and the fix looks
+         * like it silently did nothing. Mixing the version into the key means
+         * an upgrade always re-reads /v1/models once.
+         */
+        private const val SCHEMA = 2
+
         private val JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     }
 }
