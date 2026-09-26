@@ -110,11 +110,18 @@ object PRootKernel {
         customEnvironment["TMP"] = "/tmp"
         customEnvironment["TEMP"] = "/tmp"
 
-        // [T-guest-ca] Point TLS consumers (curl, git, pip) at the guest
-        // trust store so certificate verification succeeds instead of
-        // failing every request. The bundle ships pre-baked in the rootfs.
+        // [T-guest-ca] Point TLS consumers (curl, git, pip, node) at the guest
+        // trust store so certificate verification succeeds instead of failing
+        // every request. RootfsManager.injectHostCaBundle rewrites the bundle
+        // from the host trust store on every boot; the pre-baked copy is the
+        // fallback.
         customEnvironment["SSL_CERT_FILE"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["SSL_CERT_DIR"] = "/etc/ssl/certs"
         customEnvironment["CURL_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["REQUESTS_CA_BUNDLE"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["GIT_SSL_CAINFO"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["PIP_CERT"] = "/etc/ssl/certs/ca-certificates.crt"
+        customEnvironment["NODE_EXTRA_CA_CERTS"] = "/etc/ssl/certs/ca-certificates.crt"
 
         // URL interception: seed $BROWSER directly into every process envp
         // so non-login shells (which never source /etc/profile.d/minis.sh)
@@ -587,6 +594,16 @@ object PRootKernel {
         customEnvironment["TZ"] = tz
         Log.i(TAG, "Updated TZ=$tz")
         return tz
+    }
+
+    /**
+     * Rewrite guest `/etc/localtime` after a timezone change. [updateTimezone]
+     * only updates the env var used by new shells; glibc `date` and Python
+     * fall back to the symlink, which otherwise stays on the zone from boot.
+     */
+    suspend fun syncHostTimezoneFiles() {
+        if (!::rootfsManager.isInitialized) return
+        rootfsManager.applyHostTimezone()
     }
 
     /**

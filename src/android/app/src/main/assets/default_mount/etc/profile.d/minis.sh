@@ -14,6 +14,18 @@ export SHELL=/bin/bash
 export DEBIAN_FRONTEND=noninteractive
 export HISTSIZE=1000
 
+# TLS: trust the host-injected bundle at /etc/ssl/certs/ca-certificates.crt.
+# RootfsManager.injectHostCaBundle rewrites it on every boot from the Android
+# trust store (AndroidCAStore + APEX fallback); PRootKernel also seeds these
+# into every process envp so non-login shells see them.
+export SSL_CERT_FILE="${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+export SSL_CERT_DIR="${SSL_CERT_DIR:-/etc/ssl/certs}"
+export CURL_CA_BUNDLE="${CURL_CA_BUNDLE:-$SSL_CERT_FILE}"
+export REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-$SSL_CERT_FILE}"
+export GIT_SSL_CAINFO="${GIT_SSL_CAINFO:-$SSL_CERT_FILE}"
+export PIP_CERT="${PIP_CERT:-$SSL_CERT_FILE}"
+export NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-$SSL_CERT_FILE}"
+
 # Interactive bash reads ~/.bashrc; keep ENV for dash leftovers.
 export ENV="$HOME/.bashrc"
 

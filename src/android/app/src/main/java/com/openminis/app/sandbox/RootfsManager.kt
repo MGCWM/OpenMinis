@@ -3,6 +3,7 @@ package com.openminis.app.sandbox
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +14,11 @@ import java.io.File
 import java.io.FilterInputStream
 import java.io.InputStream
 import java.nio.charset.Charset
+import java.nio.file.Files
+import java.nio.file.Paths
+import java.security.KeyStore
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 
@@ -466,6 +472,7 @@ class RootfsManager private constructor(private val context: Context) {
         try {
             fileCount = copyAssetDir(DEFAULT_MOUNT_ASSET, rootfsDir)
             configureUbuntuGuest()
+            injectHostCaBundle()
         } catch (t: Throwable) {
             Log.w(TAG, "[DefaultMount] overlay failed: ${t.message}", t)
             return@withContext
@@ -488,6 +495,175 @@ class RootfsManager private constructor(private val context: Context) {
 
         val elapsedMs = (System.nanoTime() - startNs) / 1_000_000.0
         Log.i(TAG, "[DefaultMount] Done. $fileCount file(s) overlaid, $markerRemoved EXTERNALLY-MANAGED marker(s) removed, $lockedCount minis-mcp-cli lib path(s) locked read-only in %.1fms".format(elapsedMs))
+    }
+
+    /**
+     * Write the host trust store into the guest so apt/curl/git/pip/node have
+     * a CA bundle even when ubuntu-base hash-symlinks failed to extract or
+     * `update-ca-certificates` never ran.
+     *
+     * Must run on the **host**. Android 14+ moved CAs into the conscrypt APEX
+     * while `/system/etc/security/cacerts/` is often an empty stub — scanning
+     * only that path yields "no CA chain". The "AndroidCAStore" KeyStore is
+     * the public API that still works when the APEX dir is SELinux-blocked.
+     * Filesystem dirs are a fallback and also supply OpenSSL hash `.0` files
+     * (copied, never symlinked at Android paths the guest cannot follow).
+     */
+    private fun injectHostCaBundle() {
+        val pem = StringBuilder()
+        try {
+            val ks = KeyStore.getInstance("AndroidCAStore")
+            ks.load(null)
+            val aliases = ks.aliases()
+            while (aliases.hasMoreElements()) {
+                val cert = ks.getCertificate(aliases.nextElement()) as? X509Certificate ?: continue
+                appendPem(pem, cert)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "[CA] AndroidCAStore export failed: ${t.message}")
+        }
+        val guestCerts = File(rootfsDir, "etc/ssl/certs")
+        guestCerts.mkdirs()
+        var source = "AndroidCAStore"
+        if (pem.length < 2048) {
+            for (dirPath in HOST_CA_DIRS) {
+                val dir = File(dirPath)
+                val extra = loadPemFromHostDir(dir) ?: continue
+                pem.setLength(0)
+                pem.append(extra)
+                copyHostCaHashFiles(dir, guestCerts)
+                source = dirPath
+                Log.i(TAG, "[CA] AndroidCAStore insufficient (${pem.length} bytes); using filesystem $dirPath")
+                break
+            }
+        } else {
+            for (dirPath in HOST_CA_DIRS) {
+                if (copyHostCaHashFiles(File(dirPath), guestCerts) > 0) break
+            }
+        }
+        if (pem.length < 2048) {
+            Log.w(TAG, "[CA] host bundle too small (${pem.length}); leaving guest certs (HTTPS may fall back to HTTP)")
+            return
+        }
+        val dest = File(guestCerts, "ca-certificates.crt")
+        dest.writeText(pem.toString())
+        dest.setReadable(true, false)
+        val copies = listOf(
+            File(rootfsDir, "usr/lib/ssl/cert.pem"),
+            File(rootfsDir, "etc/ssl/cert.pem"),
+        )
+        for (copy in copies) {
+            try {
+                copy.parentFile?.mkdirs()
+                dest.copyTo(copy, overwrite = true)
+            } catch (t: Throwable) {
+                Log.w(TAG, "[CA] failed to copy bundle to ${copy.name}: ${t.message}")
+            }
+        }
+        File(rootfsDir, "usr/local/share/ca-certificates").mkdirs()
+        Log.i(TAG, "[CA] injected $source (${pem.length} bytes) → ${dest.absolutePath}")
+    }
+
+    private fun appendPem(pem: StringBuilder, cert: X509Certificate) {
+        pem.append("-----BEGIN CERTIFICATE-----\n")
+        pem.append(Base64.encodeToString(cert.encoded, Base64.DEFAULT).trim())
+        pem.append("\n-----END CERTIFICATE-----\n")
+    }
+
+    /**
+     * Read a host CA directory. Empty-but-present dirs (Android 14+
+     * `/system/etc/security/cacerts`) must not count as a hit.
+     */
+    private fun loadPemFromHostDir(dir: File): String? {
+        val files = try {
+            dir.listFiles()
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        if (files.isEmpty()) return null
+        val pem = StringBuilder()
+        val cf = try {
+            CertificateFactory.getInstance("X.509")
+        } catch (_: Exception) {
+            null
+        }
+        for (f in files) {
+            if (!f.isFile || f.length() == 0L) continue
+            val bytes = try {
+                f.readBytes()
+            } catch (_: Exception) {
+                continue
+            }
+            val text = String(bytes, Charsets.ISO_8859_1)
+            if (text.contains("BEGIN CERTIFICATE")) {
+                pem.append(text)
+                if (!text.endsWith("\n")) pem.append('\n')
+            } else if (cf != null) {
+                try {
+                    val cert = cf.generateCertificate(bytes.inputStream()) as? X509Certificate ?: continue
+                    appendPem(pem, cert)
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return if (pem.length >= 2048) pem.toString() else null
+    }
+
+    private fun copyHostCaHashFiles(dir: File, guestCerts: File): Int {
+        val files = try {
+            dir.listFiles()
+        } catch (_: Exception) {
+            null
+        } ?: return 0
+        var n = 0
+        for (f in files) {
+            if (!f.isFile || f.length() == 0L) continue
+            try {
+                f.copyTo(File(guestCerts, f.name), overwrite = true)
+                n++
+            } catch (_: Exception) {
+            }
+        }
+        if (n > 0) Log.i(TAG, "[CA] copied $n hash certs from ${dir.path}")
+        return n
+    }
+
+    /**
+     * Rewrite guest `/etc/localtime` + `/etc/timezone` from the current device
+     * zone. [ExecutionCoordinator.broadcastTimezoneChange] only updates the TZ
+     * env var used by new shells; glibc `date` and Python fall back to the
+     * symlink, which otherwise stays on the zone from boot.
+     */
+    suspend fun applyHostTimezone() = withContext(Dispatchers.IO) {
+        if (!isInstalled) return@withContext
+        val zoneId = java.util.TimeZone.getDefault().toZoneId().id
+        try {
+            val localtime = File(rootfsDir, "etc/localtime")
+            val target = File(rootfsDir, "usr/share/zoneinfo/$zoneId")
+            if (!target.exists()) {
+                Log.w(TAG, "[TzSync] zoneinfo missing for '$zoneId' — keeping UTC")
+                return@withContext
+            }
+            val want = "../usr/share/zoneinfo/$zoneId"
+            val current = runCatching {
+                Files.readSymbolicLink(localtime.toPath()).toString()
+            }.getOrNull()
+            val tzFile = File(rootfsDir, "etc/timezone")
+            val tzCurrent = runCatching { tzFile.readText().trim() }.getOrNull()
+            if (current == want && tzCurrent == zoneId) return@withContext
+            localtime.delete()
+            try {
+                Files.createSymbolicLink(localtime.toPath(), Paths.get(want))
+            } catch (_: Exception) {
+                // App-private storage can reject symlinks; a regular copy of
+                // zoneinfo works for glibc just as well.
+                target.copyTo(localtime, overwrite = true)
+            }
+            tzFile.writeText("$zoneId\n")
+            Log.i(TAG, "[TzSync] /etc/localtime -> $want (device zone $zoneId)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "[TzSync] failed to align /etc/localtime with $zoneId: ${t.message}")
+        }
     }
 
     /**
@@ -618,16 +794,30 @@ class RootfsManager private constructor(private val context: Context) {
                     outFile.mkdirs()
                 }
                 '2' -> {
-                    // Symbolic link
+                    // Symbolic link. Android app-private storage often rejects
+                    // createSymbolicLink; fall back to copying the referent so
+                    // /etc/ssl/certs hash names still resolve (otherwise apt/curl
+                    // report "no valid CA chain").
                     outFile.parentFile?.mkdirs()
+                    if (outFile.exists()) outFile.delete()
+                    val linkPath = Paths.get(linkName)
                     try {
-                        java.nio.file.Files.createSymbolicLink(
-                            outFile.toPath(),
-                            java.nio.file.Paths.get(linkName)
-                        )
+                        Files.createSymbolicLink(outFile.toPath(), linkPath)
                     } catch (_: Exception) {
-                        // Symlinks may fail on some Android versions; skip
-                        Log.w(TAG, "Failed to create symlink: $fullName -> $linkName")
+                        val dest = if (linkPath.isAbsolute) {
+                            File(targetDir, linkPath.toString().trimStart('/'))
+                        } else {
+                            File(outFile.parentFile, linkName)
+                        }
+                        try {
+                            if (dest.exists() && dest.isFile) {
+                                dest.copyTo(outFile, overwrite = true)
+                            } else {
+                                Log.w(TAG, "Failed to create symlink: $fullName -> $linkName")
+                            }
+                        } catch (t: Exception) {
+                            Log.w(TAG, "Failed to materialize symlink $fullName: ${t.message}")
+                        }
                     }
                 }
                 '0', '\u0000' -> {
@@ -759,6 +949,17 @@ class RootfsManager private constructor(private val context: Context) {
         private const val DEFAULT_MOUNT_ASSET = "default_mount"
         private const val SDK_TOOLS_ASSET = "android-sdk-tools-aarch64.zip"
         private const val SDK_BUILD_TOOLS_REV = "35.0.2"
+
+        /**
+         * Android 14+ stores CAs in the conscrypt APEX; `/system/etc/security/cacerts`
+         * is often present but empty. Scan in this order; skip empty dirs.
+         */
+        private val HOST_CA_DIRS = listOf(
+            "/apex/com.android.conscrypt/cacerts",
+            "/system/etc/security/cacerts",
+            "/data/misc/user/0/cacerts-added",
+            "/system/etc/security/cacerts_original",
+        )
 
         /**
          * Rootfs paths whose contents must be executable. Matches iOS
