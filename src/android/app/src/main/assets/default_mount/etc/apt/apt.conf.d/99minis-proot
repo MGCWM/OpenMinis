@@ -3,3 +3,5 @@ APT::Sandbox::User "root";
 Dpkg::Use-Pty "false";
 DPkg::Options { "--force-confdef"; "--force-confold"; };
 Acquire::Languages "none";
+Acquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";
+Acquire::Retries "3";
