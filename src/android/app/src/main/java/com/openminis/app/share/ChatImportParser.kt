@@ -2,12 +2,12 @@ package com.openminis.app.share
 
 import org.json.JSONArray
 import org.json.JSONObject
-import org.json.JSONTokener
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.PushbackReader
 import java.io.Reader
 import java.nio.charset.StandardCharsets
 import java.util.zip.ZipInputStream
@@ -196,34 +196,34 @@ object ChatImportParser {
     /**
      * Stream a top-level JSON array of message objects.
      *
-     * Uses [JSONTokener] rather than `JSONArray(wholeText)`: `nextValue()`
-     * parses exactly one value and leaves the reader positioned after it, so
-     * peak memory is one message regardless of transcript length.
+     * The array is split by [JsonArrayObjectReader] and each element is handed
+     * to [JSONObject] on its own, so peak memory is one message regardless of
+     * transcript length. (`JSONArray(wholeText)` would put the whole transcript
+     * on the heap — exactly what the export path was rewritten to avoid.)
+     *
+     * The split is hand-rolled because `org.json` on Android cannot stream:
+     * `android.jar`'s [org.json.JSONTokener] only has the `String` constructor,
+     * while the reference implementation (the jar the unit tests run against)
+     * also offers `(Reader)`. An earlier draft used the reader-based tokener and
+     * compiled locally but not on the Android build — see the class doc's note
+     * about tests not being able to cover the platform's own JSON API.
      */
     private suspend fun streamJsonArray(
         reader: Reader,
         block: suspend (ImportedMessage) -> Unit,
     ): Int = try {
-        val tokener = JSONTokener(BufferedReader(reader, 64 * 1024))
-        val open = tokener.nextClean()
-        if (open != '[') {
-            throw ChatImportException("JSON payload is not an array of messages")
-        }
-        var seen = 0
-        while (true) {
-            var c = tokener.nextClean()
-            if (c == ']') break
-            tokener.back()
-            val value = tokener.nextValue()
-            if (value is JSONObject) {
-                block(messageFrom(value))
+        JsonArrayObjectReader(reader).use { elements ->
+            var seen = 0
+            for (raw in elements) {
+                // Non-object elements are skipped rather than fatal: only the
+                // message shape is ours to judge, and a stray scalar in an
+                // otherwise good transcript should not cost the whole chat.
+                val obj = runCatching { JSONObject(raw) }.getOrNull() ?: continue
+                block(messageFrom(obj))
                 seen++
             }
-            c = tokener.nextClean()
-            if (c == ']') break
-            if (c != ',') throw ChatImportException("Malformed JSON array near message #$seen")
+            seen
         }
-        seen
     } catch (e: ChatImportException) {
         throw e
     } catch (e: Throwable) {
@@ -435,5 +435,141 @@ object ChatImportParser {
         } catch (e: Throwable) {
             throw ChatImportException("Could not parse the JSON transcript: ${e.message}")
         }
+    }
+}
+
+/**
+ * Incremental reader for a top-level JSON array: hands back one raw element at
+ * a time, so the caller can parse (and store) each message without ever holding
+ * the whole array.
+ *
+ * Written by hand because `org.json` on Android cannot stream — `JSONTokener`
+ * there has only the `String` constructor, and `JSONArray` wants the entire
+ * text. The scanner keeps just enough state to know whether it is inside a
+ * string, which is what makes it safe against text containing `{`, `}`, `[`,
+ * `]` or `,`: those characters only count when they are real JSON syntax, not
+ * prose the model happened to write.
+ *
+ * Malformed input fails loudly ([ChatImportException]) rather than yielding a
+ * partial conversation — [ChatImporter] rolls back what it has already written.
+ */
+private class JsonArrayObjectReader(
+    readerIn: Reader,
+) : Iterator<String>, java.io.Closeable {
+
+    private val input = PushbackReader(BufferedReader(readerIn, 64 * 1024), 2)
+    private var pending: String? = null
+    private var started = false
+    private var ended = false
+
+    override fun hasNext(): Boolean {
+        if (pending != null) return true
+        if (ended) return false
+        pending = readElement()
+        if (pending == null) ended = true
+        return pending != null
+    }
+
+    override fun next(): String {
+        if (!hasNext()) throw NoSuchElementException("no more elements")
+        val element = pending!!
+        pending = null
+        return element
+    }
+
+    override fun close() {
+        input.close()
+    }
+
+    private fun readElement(): String? {
+        if (!started) {
+            val first = nextSignificant()
+                ?: throw ChatImportException("The JSON transcript is empty")
+            if (first != '[') throw ChatImportException("JSON payload is not an array of messages")
+            started = true
+        }
+        var c = nextSignificant() ?: throw ChatImportException("The JSON array is not closed")
+        // Tolerate repeated / trailing separators instead of failing on them.
+        while (c == ',') {
+            c = nextSignificant() ?: throw ChatImportException("The JSON array is not closed")
+        }
+        if (c == ']') return null
+        return when (c) {
+            '{', '[' -> readComposite(c)
+            '"' -> readStringElement()
+            else -> readScalar(c)
+        }
+    }
+
+    /** Copy out one `{…}` / `[…]` value, honouring nesting and string literals. */
+    private fun readComposite(first: Char): String {
+        val buffer = StringBuilder()
+        buffer.append(first)
+        var depth = 1
+        var inString = false
+        var escaped = false
+        while (depth > 0) {
+            val c = read() ?: throw ChatImportException("JSON array ends mid-object")
+            buffer.append(c)
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '{', '[' -> depth++
+                    '}', ']' -> depth--
+                }
+            }
+        }
+        return buffer.toString()
+    }
+
+    private fun readStringElement(): String {
+        val buffer = StringBuilder("\"")
+        var escaped = false
+        while (true) {
+            val c = read() ?: throw ChatImportException("JSON array ends mid-string")
+            buffer.append(c)
+            if (escaped) {
+                escaped = false
+            } else if (c == '\\') {
+                escaped = true
+            } else if (c == '"') {
+                break
+            }
+        }
+        return buffer.toString()
+    }
+
+    /** A number / `true` / `false` / `null` element: read up to its separator. */
+    private fun readScalar(first: Char): String {
+        val buffer = StringBuilder()
+        buffer.append(first)
+        while (true) {
+            val c = read() ?: break
+            if (c == ',' || c == ']') {
+                input.unread(c.code)
+                break
+            }
+            buffer.append(c)
+        }
+        return buffer.toString().trim()
+    }
+
+    private fun nextSignificant(): Char? {
+        while (true) {
+            val c = read() ?: return null
+            // Skip whitespace and a stray UTF-8 BOM.
+            if (!c.isWhitespace() && c != '\uFEFF') return c
+        }
+    }
+
+    private fun read(): Char? {
+        val v = input.read()
+        return if (v < 0) null else v.toChar()
     }
 }

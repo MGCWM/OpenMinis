@@ -288,8 +288,20 @@ class ChatImportParserTest {
     }
 
     @Test
-    fun `content that is not a parts array is wrapped as text rather than dropped`() {
+    fun `a stray non-object element is skipped instead of failing the import`() {
         val file = write(
+            "messages.json",
+            """[{"role":"user","content":"[{\"type\":\"text\",\"value\":\"kept\"}]"},null,"junk",42,
+                {"role":"assistant","content":"[{\"type\":\"text\",\"value\":\"also kept\"}]"}]""",
+        )
+        val read = readAll(file)
+        assertEquals(2, read.size)
+        assertEquals("kept", firstText(read[0].partsJson))
+        assertEquals("also kept", firstText(read[1].partsJson))
+    }
+
+    @Test
+    fun `content that is not a parts array is wrapped as text rather than dropped`() {        val file = write(
             "messages.json",
             JSONArray().put(JSONObject().put("role", "user").put("content", "plain string body")).toString(),
         )
