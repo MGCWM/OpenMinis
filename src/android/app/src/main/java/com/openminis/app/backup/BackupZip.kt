@@ -27,27 +27,16 @@ import java.util.zip.ZipOutputStream
  * hashing pass over each member before it is written. That pass is streaming,
  * so peak memory stays at the copy buffer regardless of member size.
  *
- * ZIP64 must NEVER be emitted, and that constraint is sharper than it looks.
- * iOS's reader takes the entry count from the classic EOCD's 16-bit field and
- * loops exactly that many times. In a ZIP64 archive that field is saturated to
- * 0xFFFF, so iOS does not fail — it extracts 65 535 members, skips the rest,
- * and reports success. Silent data loss on restore, which is the one outcome a
- * backup must never produce. `ZipOutputStream` switches to ZIP64 on its own
- * once any of three limits is crossed, so all three are checked up front:
- * per-member size, total archive size, and entry count.
+ * Archives above the classic 4GB boundary are emitted as one ZIP64 file.
+ * Android reads that format directly: extraction and the entry readers both
+ * go through java.util.zip, which understands the ZIP64 records. The old
+ * refusal existed because iOS's hand-rolled reader trusts the saturated
+ * 16-bit EOCD entry count and silently drops members past 65 535 — this fork
+ * has no iOS side, so that cross-platform constraint no longer applies.
  */
 object BackupZip {
 
     private const val TAG = "Backup"
-
-    /** Classic-ZIP ceiling for a member's size and for the archive's total. */
-    private const val MAX_MEMBER_BYTES = 0xFFFFFFFFL - 1
-
-    /**
-     * Classic EOCD stores the entry count in 16 bits. One more than this and
-     * ZipOutputStream emits a ZIP64 record that iOS silently under-reads.
-     */
-    private const val MAX_ENTRIES = 65_535
 
     /**
      * [T-android-restore-gc-storm] Shared copy-buffer size. 256KB stays under
@@ -120,24 +109,9 @@ object BackupZip {
             .sortedBy { it.relativeTo(base).invariantPath() }
             .toList()
 
-        // Refuse before writing anything, rather than discovering it at the
-        // end: ZipOutputStream would quietly promote the archive to ZIP64, and
-        // the resulting package looks perfectly valid right up until iOS reads
-        // 65 535 of its members and calls the restore a success.
-        if (members.size > MAX_ENTRIES) {
-            throw ZipException(
-                "Package would hold ${members.size} files, beyond the ${MAX_ENTRIES}-entry " +
-                    "limit of the cross-platform ZIP format."
-            )
-        }
-        val totalBytes = members.sumOf { it.length() }
-        if (totalBytes > MAX_MEMBER_BYTES) {
-            throw ZipException(
-                "Package would be $totalBytes bytes, beyond the 4GB limit of the " +
-                    "cross-platform ZIP format."
-            )
-        }
-
+        // No up-front size or entry-count refusal: ZipOutputStream promotes
+        // the archive to ZIP64 once a classic limit is crossed, and both the
+        // extractor and importer read that format.
         ZipOutputStream(destination.outputStream().buffered()).use { zos ->
             // Per-entry method; see [shouldStore]. The stream-level default
             // stays STORED so an entry that does not set one explicitly keeps
@@ -180,11 +154,6 @@ object BackupZip {
      */
     private fun writeEntry(zos: ZipOutputStream, name: String, file: File, buf: ByteArray) {
         val size = file.length()
-        if (size > MAX_MEMBER_BYTES) {
-            throw ZipException(
-                "Package member '$name' is ${size} bytes, beyond the 4GB classic-ZIP limit."
-            )
-        }
         // A DEFLATE entry forces the iOS reader to inflate the WHOLE member
         // into one allocation (`compression_decode_buffer`,
         // BackupZipExtractor.swift:364) — an app with a jetsam history cannot
