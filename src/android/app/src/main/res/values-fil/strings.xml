@@ -472,6 +472,17 @@
     <string name="sessionlist_export">I-export</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Plain Text</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">I-import ang chat</string>
+    <string name="import_progress">Nag-i-import…</string>
+    <string name="import_progress_n">Nag-i-import… %1$d mensahe</string>
+    <string name="import_done_text">Na-import ang %1$d mensahe sa bagong chat.</string>
+    <string name="import_media_note">%1$d attachment ang wala sa export file kaya wala rin dito.</string>
+    <string name="import_model_note">Hindi available sa device na ito ang orihinal na modelo — gumagamit na ngayon ang chat ng %1$s.</string>
+    <string name="import_failed_title">Nabigo ang pag-import</string>
+    <string name="import_open">Buksan</string>
+    <string name="import_close">Tapos na</string>
     <string name="export_summary_format">Format</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Plain Text</string>

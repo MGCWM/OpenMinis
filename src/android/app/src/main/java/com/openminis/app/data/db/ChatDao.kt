@@ -182,6 +182,16 @@ interface ChatDao {
     suspend fun insertMessage(message: MessageEntity)
 
     /**
+     * [T-android-chat-import] Batched insert for the import path: a restored
+     * transcript can be thousands of rows, and Room wraps a list insert in a
+     * single transaction, so the whole import is one transaction per batch
+     * instead of one fsync per message. REPLACE (same as [insertMessage]) —
+     * the caller mints fresh ids, so a conflict can only mean a bug.
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
+    /**
      * [T-android-voice-correction] User messages newer than [since] (epoch ms),
      * across every session, for typed-vocabulary mining.
      *

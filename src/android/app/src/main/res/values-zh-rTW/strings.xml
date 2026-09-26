@@ -471,6 +471,17 @@
     <string name="sessionlist_export">匯出</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">純文字</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">匯入對話</string>
+    <string name="import_progress">正在匯入…</string>
+    <string name="import_progress_n">正在匯入… %1$d 則訊息</string>
+    <string name="import_done_text">已匯入 %1$d 則訊息，儲存在新對話中。</string>
+    <string name="import_media_note">匯出檔不含 %1$d 個附件，匯入後無法顯示。</string>
+    <string name="import_model_note">原模型在本機無法使用，該對話已改用 %1$s。</string>
+    <string name="import_failed_title">匯入失敗</string>
+    <string name="import_open">開啟</string>
+    <string name="import_close">完成</string>
     <string name="export_summary_format">匯出格式</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">純文字</string>

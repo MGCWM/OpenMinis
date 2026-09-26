@@ -83,6 +83,7 @@ import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Language
@@ -94,9 +95,12 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Translate
 import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Surface
@@ -609,6 +613,53 @@ fun SessionListScreen(
     var showBrowserSettings by remember { mutableStateOf(false) }
     val browserTabPool = remember { com.openminis.app.browser.BrowserTabPool(context) }
 
+    // [T-android-chat-import] The way back in for the long-press → Export flow.
+    // Opening a conversation from a file is a screen-level action (there is no
+    // session to long-press yet), so it lives in the list's "more" menu and on
+    // the New Chat FAB's long-press, next to the other things that CREATE a
+    // conversation. The work itself is ChatImporter's; this block owns only
+    // the picker, the progress dialog and the outcome.
+    //
+    // The picker is deliberately the system document picker over `*/*`: an
+    // exported chat is a `.zip`, and a handful of providers report that as
+    // `application/octet-stream`, so a narrower MIME list is a minefield of
+    // greyed-out files. ChatImportParser rejects what it cannot read, with a
+    // message that says so.
+    var importState by remember { mutableStateOf<ImportUiState?>(null) }
+    val importedCount by com.openminis.app.share.ChatImporter.importedCount.collectAsState()
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importState = ImportUiState.Running
+        // Note the reset inside importChat: the counter is shared, so the
+        // dialog must not flash the previous import's total on entry.
+        scope.launch {
+            try {
+                importState = ImportUiState.Done(
+                    com.openminis.app.share.ChatImporter.importChat(
+                        context = context,
+                        uri = uri,
+                        repository = chatRepository,
+                        providerRepository = providerRepository,
+                        fallbackTitle = context.getString(R.string.sessionlist_import),
+                    ),
+                )
+            } catch (t: kotlinx.coroutines.CancellationException) {
+                // Leaving the screen cancels the import; the importer has
+                // already rolled its partial session back.
+                throw t
+            } catch (t: Throwable) {
+                importState = ImportUiState.Failed(
+                    t.message ?: context.getString(R.string.import_failed_title),
+                )
+            }
+        }
+    }
+    val startImport: () -> Unit = {
+        importLauncher.launch(arrayOf("*/*"))
+    }
+
     // [T-android-session-grouping] Groups are pulled out FIRST; only the
     // leftovers go through date bucketing. Assembly order below is
     // Pinned → group block → date buckets, matching iOS.
@@ -833,6 +884,21 @@ fun SessionListScreen(
                                 onDismissRequest = { showOverflowMenu = false },
                                 offset = DpOffset(0.dp, 0.dp),
                             ) {
+                                // [T-android-chat-import] Top of the menu: it is
+                                // the only entry here that brings something IN,
+                                // and it mirrors the long-press → Export that
+                                // already existed on every row.
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.sessionlist_import)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        startImport()
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Outlined.FileDownload, contentDescription = null)
+                                    },
+                                )
+                                MinisMenuDivider()
                                 if (sessions.isNotEmpty()) {
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.sessionlist_select_action)) },
@@ -1257,6 +1323,7 @@ fun SessionListScreen(
                     searchQuery = searchQuery,
                     isSearching = isSearching,
                     hasSessions = sessions.isNotEmpty() || isSearchActive,
+                    onImportChat = startImport,
                     onNewChat = {
                         scope.launch {
                             val sessionId = viewModel.createNewSession()
@@ -1466,6 +1533,52 @@ fun SessionListScreen(
             onDismiss = { showBrowserSettings = false },
         )
     }
+
+    // [T-android-chat-import] Progress + outcome. Reported in a dialog rather
+    // than a Toast because the success case has three things worth saying —
+    // how many messages arrived, which model the chat ended up on, and what
+    // the archive could not carry — plus the obvious next action (open it).
+    when (val state = importState) {
+        null -> Unit
+
+        ImportUiState.Running -> ImportProgressDialog(importedCount)
+
+        is ImportUiState.Done -> {
+            val result = state.result
+            MinisAlertDialog(
+                onDismissRequest = { importState = null },
+                title = stringResource(R.string.sessionlist_import),
+                text = buildString {
+                    append(context.getString(R.string.import_done_text, result.messageCount))
+                    if (result.mediaRefCount > 0) {
+                        append("\n\n")
+                        append(
+                            context.getString(R.string.import_media_note, result.mediaRefCount),
+                        )
+                    }
+                    if (result.modelRemapped) {
+                        append("\n\n")
+                        append(context.getString(R.string.import_model_note, result.modelId))
+                    }
+                },
+                confirmText = stringResource(R.string.import_open),
+                onConfirm = {
+                    importState = null
+                    onSessionClickGuarded(result.sessionId)
+                },
+                dismissText = stringResource(R.string.import_close),
+                onDismiss = { importState = null },
+            )
+        }
+
+        is ImportUiState.Failed -> MinisAlertDialog(
+            onDismissRequest = { importState = null },
+            title = stringResource(R.string.import_failed_title),
+            text = state.message,
+            confirmText = stringResource(R.string.ok),
+            onConfirm = { importState = null },
+        )
+    }
 }
 
 // ─── Dual FAB Row (matching iOS fabRow) ─────────────────────────────────────
@@ -1482,6 +1595,14 @@ private fun DualFabRow(
     hasSessions: Boolean,
     onNewChat: () -> Unit,
     onNewChatWithGroup: (String) -> Unit,
+    /**
+     * [T-android-chat-import] Long-press action on the New Chat FAB: import a
+     * conversation from an exported file. Sits with the "new chat in group"
+     * entries because it belongs to the same family — ways a conversation
+     * gets created — and it is where a user who has just been sent a chat
+     * export will look for "put this in my list".
+     */
+    onImportChat: () -> Unit,
     modelGroups: List<com.openminis.app.data.model.ModelGroup>,
     onSearchToggle: () -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -1559,7 +1680,10 @@ private fun DualFabRow(
                     .combinedClickable(
                         onClick = onNewChat,
                         onLongClick = {
-                            if (topGroups.isNotEmpty()) showGroupMenu = true
+                            // Always opens now (it used to do nothing without
+                            // groups): the menu carries the import entry as
+                            // well as the group shortcuts.
+                            showGroupMenu = true
                         },
                     )
                     .shadow(8.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.2f)),
@@ -1581,6 +1705,21 @@ private fun DualFabRow(
                         },
                     )
                 }
+                if (topGroups.isNotEmpty()) {
+                    MinisMenuDivider()
+                }
+                // [T-android-chat-import] See onImportChat — the import entry
+                // is the reason this menu opens even with no groups.
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.sessionlist_import)) },
+                    leadingIcon = {
+                        Icon(Icons.Outlined.FileDownload, contentDescription = null)
+                    },
+                    onClick = {
+                        showGroupMenu = false
+                        onImportChat()
+                    },
+                )
             }
         }
     }
@@ -3384,3 +3523,63 @@ private fun exportSession(
     }
 }
 
+
+// ─── Import Session ────────────────────────────────────────────────────────
+
+/**
+ * [T-android-chat-import] State of the one import the list screen can have in
+ * flight. Kept as a file-level type (rather than inline `var`s) so the three
+ * mutually exclusive states cannot be represented at once — a half-imported
+ * "done" with a live progress counter is not a thing.
+ */
+private sealed interface ImportUiState {
+    /** Picker returned; parser + inserts are running. */
+    data object Running : ImportUiState
+
+    /** Committed. [result] drives the confirmation dialog. */
+    data class Done(val result: com.openminis.app.share.ChatImporter.Result) : ImportUiState
+
+    /** Nothing was written — [ChatImporter] rolls its partial session back. */
+    data class Failed(val message: String) : ImportUiState
+}
+
+/**
+ * Indeterminate-by-design progress: the total is only known once the file is
+ * read (a plain-text transcript has no count, and a JSON array's length means
+ * parsing it), so the dialog reports messages *seen* and keeps spinning. For
+ * the sizes this app deals with the counter is a "it is alive" signal, not a
+ * percentage.
+ *
+ * Not dismissible: an abandoned import would leave the counter running with no
+ * owner. Cancelling means leaving the screen, which cancels the coroutine and
+ * rolls the import back.
+ */
+@Composable
+private fun ImportProgressDialog(count: Int) {
+    Dialog(onDismissRequest = {}) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(14.dp))
+                Text(
+                    text = if (count > 0) {
+                        stringResource(R.string.import_progress_n, count)
+                    } else {
+                        stringResource(R.string.import_progress)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
+    }
+}

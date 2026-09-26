@@ -472,6 +472,17 @@
     <string name="sessionlist_export">Eksport</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Teks Biasa</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">Import sembang</string>
+    <string name="import_progress">Mengimport…</string>
+    <string name="import_progress_n">Mengimport… %1$d mesej</string>
+    <string name="import_done_text">%1$d mesej diimport ke sembang baharu.</string>
+    <string name="import_media_note">%1$d lampiran tiada dalam fail eksport dan tidak akan dipaparkan di sini.</string>
+    <string name="import_model_note">Model asal tidak tersedia pada peranti ini — sembang kini menggunakan %1$s.</string>
+    <string name="import_failed_title">Import gagal</string>
+    <string name="import_open">Buka</string>
+    <string name="import_close">Selesai</string>
     <string name="export_summary_format">Format</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Teks Biasa</string>

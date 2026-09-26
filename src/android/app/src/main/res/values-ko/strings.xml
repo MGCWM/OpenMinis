@@ -472,6 +472,17 @@
     <string name="sessionlist_export">내보내기</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">일반 텍스트</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">대화 가져오기</string>
+    <string name="import_progress">가져오는 중…</string>
+    <string name="import_progress_n">가져오는 중… 메시지 %1$d개</string>
+    <string name="import_done_text">메시지 %1$d개를 새 대화로 가져왔습니다.</string>
+    <string name="import_media_note">내보내기 파일에 포함되지 않은 첨부파일 %1$d개는 여기에 표시되지 않습니다.</string>
+    <string name="import_model_note">원래 모델을 이 기기에서 사용할 수 없어 이 대화는 %1$s을(를) 사용합니다.</string>
+    <string name="import_failed_title">가져오기 실패</string>
+    <string name="import_open">열기</string>
+    <string name="import_close">완료</string>
     <string name="export_summary_format">형식</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">일반 텍스트</string>

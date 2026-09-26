@@ -474,6 +474,17 @@
     <string name="sessionlist_export">Экспорт</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Обычный текст</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">Импорт чата</string>
+    <string name="import_progress">Импорт…</string>
+    <string name="import_progress_n">Импорт… сообщений: %1$d</string>
+    <string name="import_done_text">Импортировано сообщений: %1$d в новый чат.</string>
+    <string name="import_media_note">%1$d вложений нет в файле экспорта, поэтому они здесь отсутствуют.</string>
+    <string name="import_model_note">Исходная модель недоступна на этом устройстве — чат использует %1$s.</string>
+    <string name="import_failed_title">Не удалось импортировать</string>
+    <string name="import_open">Открыть</string>
+    <string name="import_close">Готово</string>
     <string name="export_summary_format">Формат</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Обычный текст</string>

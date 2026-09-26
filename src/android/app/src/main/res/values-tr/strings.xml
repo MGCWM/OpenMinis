@@ -472,6 +472,17 @@
     <string name="sessionlist_export">Dışa Aktar</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Düz Metin</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">Sohbeti içe aktar</string>
+    <string name="import_progress">İçe aktarılıyor…</string>
+    <string name="import_progress_n">İçe aktarılıyor… %1$d mesaj</string>
+    <string name="import_done_text">%1$d mesaj yeni bir sohbete aktarıldı.</string>
+    <string name="import_media_note">%1$d ek dosya dışa aktarma dosyasında yok ve burada görünmeyecek.</string>
+    <string name="import_model_note">Özgün model bu cihazda yok — sohbet artık %1$s kullanıyor.</string>
+    <string name="import_failed_title">İçe aktarma başarısız</string>
+    <string name="import_open">Aç</string>
+    <string name="import_close">Tamam</string>
     <string name="export_summary_format">Biçim</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Düz Metin</string>

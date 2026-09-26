@@ -473,6 +473,17 @@
     <string name="sessionlist_export">Exportă</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Text simplu</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">Importă conversația</string>
+    <string name="import_progress">Se importă…</string>
+    <string name="import_progress_n">Se importă… %1$d mesaje</string>
+    <string name="import_done_text">%1$d mesaje au fost importate într-o conversație nouă.</string>
+    <string name="import_media_note">%1$d atașament(e) nu sunt incluse în fișierul exportat și lipsesc aici.</string>
+    <string name="import_model_note">Modelul original nu este disponibil pe acest dispozitiv — conversația folosește acum %1$s.</string>
+    <string name="import_failed_title">Importul a eșuat</string>
+    <string name="import_open">Deschide</string>
+    <string name="import_close">Gata</string>
     <string name="export_summary_format">Format</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Text simplu</string>

@@ -472,6 +472,17 @@
     <string name="sessionlist_export">エクスポート</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">プレーンテキスト</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">会話をインポート</string>
+    <string name="import_progress">インポート中…</string>
+    <string name="import_progress_n">インポート中… %1$d 件のメッセージ</string>
+    <string name="import_done_text">%1$d 件のメッセージを新しい会話としてインポートしました。</string>
+    <string name="import_media_note">エクスポートファイルに含まれていない添付ファイル %1$d 件は表示されません。</string>
+    <string name="import_model_note">元のモデルはこの端末で利用できないため、この会話は %1$s を使用します。</string>
+    <string name="import_failed_title">インポートに失敗しました</string>
+    <string name="import_open">開く</string>
+    <string name="import_close">完了</string>
     <string name="export_summary_format">形式</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">テキスト</string>

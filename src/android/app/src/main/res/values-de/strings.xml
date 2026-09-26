@@ -472,6 +472,17 @@
     <string name="sessionlist_export">Exportieren</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">Klartext</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">Chat importieren</string>
+    <string name="import_progress">Wird importiert…</string>
+    <string name="import_progress_n">Wird importiert… %1$d Nachrichten</string>
+    <string name="import_done_text">%1$d Nachrichten in einen neuen Chat importiert.</string>
+    <string name="import_media_note">%1$d Anhang/Anhänge sind in der Exportdatei nicht enthalten und fehlen hier.</string>
+    <string name="import_model_note">Das ursprüngliche Modell ist auf diesem Gerät nicht verfügbar – der Chat verwendet jetzt %1$s.</string>
+    <string name="import_failed_title">Import fehlgeschlagen</string>
+    <string name="import_open">Öffnen</string>
+    <string name="import_close">Fertig</string>
     <string name="export_summary_format">Format</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">Nur Text</string>

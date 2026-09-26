@@ -472,6 +472,17 @@
     <string name="sessionlist_export">ส่งออก</string>
     <string name="sessionlist_export_json">JSON</string>
     <string name="sessionlist_export_plain">ข้อความธรรมดา</string>
+    <!-- [T-android-chat-import] Inverse of the long-press export: -->
+    <!-- read an exported transcript back into the session list. -->
+    <string name="sessionlist_import">นำเข้าบทสนทนา</string>
+    <string name="import_progress">กำลังนำเข้า…</string>
+    <string name="import_progress_n">กำลังนำเข้า… %1$d ข้อความ</string>
+    <string name="import_done_text">นำเข้า %1$d ข้อความไปยังบทสนทนาใหม่แล้ว</string>
+    <string name="import_media_note">ไฟล์ส่งออกไม่มีไฟล์แนบ %1$d รายการ จึงไม่แสดงที่นี่</string>
+    <string name="import_model_note">โมเดลเดิมใช้ไม่ได้บนอุปกรณ์นี้ บทสนทนาจึงใช้ %1$s</string>
+    <string name="import_failed_title">นำเข้าไม่สำเร็จ</string>
+    <string name="import_open">เปิด</string>
+    <string name="import_close">เสร็จสิ้น</string>
     <string name="export_summary_format">รูปแบบ</string>
     <string name="export_summary_format_value_json">JSON</string>
     <string name="export_summary_format_value_txt">ข้อความธรรมดา</string>
