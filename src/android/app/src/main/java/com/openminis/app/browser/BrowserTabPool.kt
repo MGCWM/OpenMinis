@@ -443,7 +443,7 @@ class BrowserTabPool(private val context: Context) {
      *  so the agent can read and operate on them in follow-up turns. */
     private fun sessionWorkspaceDir(): File? {
         val sid = sessionId ?: return null
-        return com.openminis.app.sandbox.SessionWorkspace.hostDir(context.filesDir, sid, "workspace")
+        return File(File(File(context.filesDir, "minis-sessions"), sid), "workspace")
             .apply { mkdirs() }
     }
 

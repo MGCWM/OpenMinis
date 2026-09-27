@@ -201,7 +201,7 @@ class BrowserUseManager(
         val resolved = mutableListOf<android.net.Uri>()
         val missing = mutableListOf<String>()
         fun sessionDir(kind: String): File? =
-            sid?.let { com.openminis.app.sandbox.SessionWorkspace.hostDir(ctx.filesDir, it, kind) }
+            sid?.let { File(File(File(ctx.filesDir, "minis-sessions"), it), kind) }
         for (raw in paths) {
             val path = raw.trim()
             if (path.isEmpty()) continue
