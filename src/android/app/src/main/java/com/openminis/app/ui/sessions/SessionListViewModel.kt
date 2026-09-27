@@ -807,27 +807,27 @@ class SessionListViewModel(
         var firstUserRaw: String? = null
         try {
                 val session = chatRepository.getSession(id) ?: return false
-                val messages = chatRepository.loadMessages(id)
-                if (messages.isEmpty()) return false
-
-                // [T-titlegen-context-first-last-pair] Summary = first user +
-                // first assistant, plus (when the session has more than one user
-                // turn) the last user + last assistant, each truncated to 200
-                // chars — so a regenerated title reflects a mid/late topic shift
-                // rather than only the opener.
-                val userMessages = messages.filter { it.role == "user" }
-                // Keep the untruncated first user message for the fallback path.
-                firstUserRaw = userMessages.firstOrNull()?.let { extractText(it.partsJson) }
+                // [T-android-huge-session-load-oom] Bounded heads instead of
+                // parsing every message: first/last two user + assistant rows.
+                val firstUsers = chatRepository.loadMessageHeadsByRole(id, "user", 800, 2)
+                val lastUsers = chatRepository.loadMessageHeadsByRole(id, "user", 800, 2, newest = true)
+                val firstAssistants = chatRepository.loadMessageHeadsByRole(id, "assistant", 800, 2)
+                val lastAssistants = chatRepository.loadMessageHeadsByRole(id, "assistant", 800, 2, newest = true)
+                if (firstUsers.isEmpty()) return false
+                fun head(row: com.openminis.app.data.db.MessageHeadRow): String =
+                    extractText(row.headText.orEmpty())
+                val firstUser = firstUsers.firstOrNull { head(it).isNotBlank() } ?: return false
+                firstUserRaw = head(firstUser)
                 val userText = firstUserRaw?.take(200) ?: return false
-                // First/last assistant *text* message — skip tool-only messages
-                // whose extracted text is blank so the summary carries real prose.
-                val assistantTexts = messages.filter { it.role == "assistant" }
-                    .map { extractText(it.partsJson) }
-                    .filter { it.isNotBlank() }
-                val firstAssistantText = assistantTexts.firstOrNull()?.take(200) ?: ""
-                val hasMultipleUserTurns = userMessages.size > 1
-                val lastUserText = if (hasMultipleUserTurns) userMessages.lastOrNull()?.let { extractText(it.partsJson) }?.take(200) ?: "" else ""
-                val lastAssistantText = if (hasMultipleUserTurns) assistantTexts.lastOrNull()?.take(200) ?: "" else ""
+                val firstAssistantText = firstAssistants.firstOrNull { head(it).isNotBlank() }
+                    ?.let { head(it).take(200) } ?: ""
+                val hasMultipleUserTurns = lastUsers.any { it.id != firstUser.id }
+                val lastUserText = if (hasMultipleUserTurns) {
+                    lastUsers.firstOrNull { it.id != firstUser.id }?.let { head(it).take(200) } ?: ""
+                } else ""
+                val lastAssistantText = if (hasMultipleUserTurns) {
+                    lastAssistants.firstOrNull { head(it).isNotBlank() }?.let { head(it).take(200) } ?: ""
+                } else ""
 
                 val prompt = buildString {
                     append("Based on the following conversation, generate a short title (max 6 words) that captures the topic. ")
@@ -1096,19 +1096,27 @@ class SessionListViewModel(
     fun duplicateSession(id: String) {
         viewModelScope.launch {
             val session = chatRepository.getSession(id) ?: return@launch
-            val messages = chatRepository.loadMessages(id)
+            // [T-android-huge-session-load-oom] Page through the source session
+            // instead of materialising every message at once.
+            val messageTotal = chatRepository.messageCount(id)
             val newSession = chatRepository.createSession(
                 modelId = session.modelId,
                 title = "${session.title ?: "Chat"} (Copy)",
             )
-            for (msg in messages) {
-                chatRepository.appendMessage(
-                    sessionId = newSession.id,
-                    role = msg.role,
-                    partsJson = msg.partsJson,
-                    tokenUsage = msg.tokenUsage,
-                    reasoningContent = msg.reasoningContent,
-                )
+            var offset = 0
+            while (offset < messageTotal) {
+                val page = chatRepository.dao.loadMessagesPage(id, offset, 50)
+                if (page.isEmpty()) break
+                for (msg in page) {
+                    chatRepository.appendMessage(
+                        sessionId = newSession.id,
+                        role = msg.role,
+                        partsJson = msg.partsJson,
+                        tokenUsage = msg.tokenUsage,
+                        reasoningContent = msg.reasoningContent,
+                    )
+                }
+                offset += page.size
             }
         }
     }
@@ -1174,21 +1182,9 @@ class SessionListViewModel(
         for (session in sessions) {
             val title = session.title.orEmpty()
             if (title.lowercase().contains(q)) continue
-            val msgs = chatRepository.loadMessages(session.id)
-            var foundSnippet: String? = null
-            for (m in msgs) {
-                val text = extractText(m.partsJson)
-                val pos = text.lowercase().indexOf(q)
-                if (pos < 0) continue
-                val radius = 50
-                val start = (pos - radius).coerceAtLeast(0)
-                val end = (pos + query.length + radius).coerceAtMost(text.length)
-                val core = text.substring(start, end).replace('\n', ' ').replace('\r', ' ')
-                val prefix = if (start > 0) "…" else ""
-                val suffix = if (end < text.length) "…" else ""
-                foundSnippet = prefix + core + suffix
-                break
-            }
+            val hit = chatRepository.dao.findFirstMessageSnippet(session.id, query, 50, query.length + 100)
+            var foundSnippet: String? = hit?.headText?.replace('\n', ' ').replace('\r', ' ')
+            if (!foundSnippet.isNullOrBlank()) foundSnippet = "…$foundSnippet…"
             if (foundSnippet != null) out[session.id] = foundSnippet
         }
         return out
