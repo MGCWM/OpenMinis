@@ -138,7 +138,8 @@ jobs:
             --tests 'com.openminis.app.data.CompactFallbackPolicyTest' \
             --tests 'com.openminis.app.data.CompactSplitPredicateTest' \
             --tests 'com.openminis.app.sandbox.AdaptiveExecutionGateTest' \
-            --tests 'com.openminis.app.ui.settings.StepperClampTest'
+            --tests 'com.openminis.app.ui.settings.StepperClampTest' \
+            --tests 'com.openminis.app.service.ForegroundNotificationPolicyTest'
 
       - name: assembleRelease
         working-directory: src/android
