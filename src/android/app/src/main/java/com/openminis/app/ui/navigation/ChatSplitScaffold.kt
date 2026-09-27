@@ -436,16 +436,14 @@ fun ChatSplitScaffold(
         // traced via an on-device probe build to exactly this library effect.
         // A destination change must never carry keyboard focus on a
         // touch-first device, so re-clear right after the library's focus
-        // lands, and once more for slow frames. Draft sessions keep their
-        // intentional auto-focus.
+        // lands. (The composer additionally rejects the rogue focus in-frame;
+        // this clear is the fallback net for paths that bypass it.) Draft
+        // sessions keep their intentional auto-focus.
         val paneFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
         val paneKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
         androidx.compose.runtime.LaunchedEffect(currentSessionId) {
             if (isDraftSessionId(currentSessionId)) return@LaunchedEffect
-            kotlinx.coroutines.delay(80)
-            paneFocusManager.clearFocus(force = true)
-            paneKeyboard?.hide()
-            kotlinx.coroutines.delay(220)
+            kotlinx.coroutines.delay(100)
             paneFocusManager.clearFocus(force = true)
             paneKeyboard?.hide()
         }

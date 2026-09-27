@@ -813,6 +813,10 @@ fun ChatScreen(
         }
     }
     val inputFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    // [T-android-ime-on-open] Uptime when this chat's composition began; the
+    // composer uses it to reject the M3 scaffold's programmatic focus that
+    // lands right after a session opens (see the composer's onFocusChanged).
+    val composerImeGuardOpenedAt = remember(sessionId) { android.os.SystemClock.uptimeMillis() }
     // Mirror of iOS `inputFocused` — needed so the swipe-up-on-empty-input
     // gesture only pops the keyboard when it's actually collapsed.
     var inputFocused by remember { mutableStateOf(false) }
@@ -5822,14 +5826,31 @@ fun ChatScreen(
                                     // those would swap the hint while the user
                                     // is typing or dismissing the keyboard.
                                     if (it.isFocused && !inputFocused) {
-                                        placeholderIndex = ComposerPlaceholderRotation.nextIndex(
-                                            current = placeholderIndex,
-                                            hasFocusedBefore = composerHasFocusedBefore,
-                                            sessionHasMessages = messages.isNotEmpty(),
-                                            screenReaderOn = screenReaderEnabled,
-                                            randomIndex = { bound -> kotlin.random.Random.nextInt(bound) },
-                                        )
-                                        composerHasFocusedBefore = true
+                                        // [T-android-ime-on-open] The M3 scaffold
+                                        // re-focuses the newly shown pane on every
+                                        // destination change; its request lands on
+                                        // this composer a few ms after a session
+                                        // opens and would pop the IME. No user
+                                        // gesture can arrive that fast, so reject
+                                        // it in-frame — a delayed clear (80 ms)
+                                        // still let the keyboard flash. Drafts and
+                                        // screen readers keep the normal path.
+                                        val sinceOpenMs = android.os.SystemClock.uptimeMillis() -
+                                            composerImeGuardOpenedAt
+                                        if (sinceOpenMs < 500 && !sessionId.startsWith("__new__") &&
+                                            !screenReaderEnabled) {
+                                            focusManager.clearFocus(force = true)
+                                            keyboardController?.hide()
+                                        } else {
+                                            placeholderIndex = ComposerPlaceholderRotation.nextIndex(
+                                                current = placeholderIndex,
+                                                hasFocusedBefore = composerHasFocusedBefore,
+                                                sessionHasMessages = messages.isNotEmpty(),
+                                                screenReaderOn = screenReaderEnabled,
+                                                randomIndex = { bound -> kotlin.random.Random.nextInt(bound) },
+                                            )
+                                            composerHasFocusedBefore = true
+                                        }
                                     }
                                     inputFocused = it.isFocused
                                 }
