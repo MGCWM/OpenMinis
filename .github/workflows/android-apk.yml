@@ -140,7 +140,8 @@ jobs:
             --tests 'com.openminis.app.sandbox.AdaptiveExecutionGateTest' \
             --tests 'com.openminis.app.ui.settings.StepperClampTest' \
             --tests 'com.openminis.app.service.ForegroundNotificationPolicyTest' \
-            --tests 'com.openminis.app.backup.BackupSelectionPolicyTest'
+            --tests 'com.openminis.app.backup.BackupSelectionPolicyTest' \
+            --tests 'com.openminis.app.service.SessionKeyPolicyTest'
 
       - name: assembleRelease
         working-directory: src/android
