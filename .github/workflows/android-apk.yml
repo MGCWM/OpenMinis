@@ -122,6 +122,12 @@ jobs:
             curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 "$base/$MARKER" || echo unreachable
           done
 
+      - name: Unit tests (browser)
+        working-directory: src/android
+        run: |
+          ./gradlew testDebugUnitTest --no-daemon \
+            --tests 'com.openminis.app.browser.BrowserActionInputTest'
+
       - name: assembleRelease
         working-directory: src/android
         env:

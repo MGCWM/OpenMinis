@@ -53,6 +53,9 @@ class BrowserUseManager(
         private const val NAVIGATION_TIMEOUT_MS = 30_000L
         private const val SCREENSHOT_QUALITY = 80        // Explicit screenshot action (iOS: 0.8)
         private const val SNAPSHOT_QUALITY = 70          // Auto-snapshot after visual-change actions (iOS: 0.7)
+        // [T-android-browser-observability] Bounded trails + file-picker wait.
+        private const val MAX_LOG_ENTRIES = 200
+        private const val UPLOAD_WAIT_MS = 10_000L
         private const val DEFAULT_DOM_STABLE_TIMEOUT_MS = 5_000
 
         /**
@@ -142,6 +145,135 @@ class BrowserUseManager(
         }
     }
 
+    @Volatile
+    var isDisposed: Boolean = false
+        private set
+
+    /** Permanent release, always on Main; a hidden sheet must not call this. */
+    fun dispose() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (isDisposed) return
+        isDisposed = true
+        navigationDeferred?.cancel()
+        navigationDeferred = null
+        asyncJsDeferred?.cancel()
+        asyncJsDeferred = null
+        onNewWindow = null
+        onCloseWindow = null
+        onDownloadStart = null
+        onBlobDownloadData = null
+        webView.stopLoading()
+        (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+        webView.setDownloadListener(null)
+        webView.removeJavascriptInterface("__minis__")
+        webView.webChromeClient = null
+        webView.webViewClient = WebViewClient()
+        webView.removeAllViews()
+        webView.destroy()
+    }
+
+    // -- [T-android-browser-observability] Agent-facing trails + uploads --
+
+    /** Bounded, newest-last page console trail (level: message (src:line)). */
+    private val consoleLog = ArrayDeque<String>()
+
+    /** Bounded, newest-last request trail (METHOD url [main]). No bodies. */
+    private val networkLog = ArrayDeque<String>()
+    private val logLock = Any()
+
+    /** Parked `<input type=file>` callback until upload_file answers it. */
+    @Volatile
+    private var pendingFileChooser: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+
+    private fun appendLog(buf: ArrayDeque<String>, line: String) {
+        synchronized(logLock) {
+            if (buf.size >= MAX_LOG_ENTRIES) buf.removeFirst()
+            buf.addLast(line.take(600))
+        }
+    }
+
+    fun hasPendingFileChooser(): Boolean = pendingFileChooser != null
+
+    fun readConsoleLog(level: String?, limit: Int = 100): List<String> = synchronized(logLock) {
+        val want = level?.trim()?.lowercase()?.takeIf { it.isNotEmpty() && it != "all" }
+        consoleLog
+            .filter { want == null || it.lowercase().startsWith("$want:") }
+            .takeLast(limit.coerceIn(1, MAX_LOG_ENTRIES))
+    }
+
+    fun readNetworkLog(filter: String?, limit: Int = 100): List<String> = synchronized(logLock) {
+        val f = filter?.trim()?.takeIf { it.isNotEmpty() }
+        networkLog
+            .filter { f == null || it.contains(f, ignoreCase = true) }
+            .takeLast(limit.coerceIn(1, MAX_LOG_ENTRIES))
+    }
+
+    /**
+     * Resolve the agent's `/var/minis/…` paths (or workspace-relative paths)
+     * to content URIs the WebView can read. The per-session workspace and
+     * attachments live under `minis-sessions/<sid>/`, shared under
+     * `minis-global/shared` — all already declared for our FileProvider.
+     */
+    private fun resolveUploadUris(paths: List<String>): Pair<List<android.net.Uri>, List<String>> {
+        val ctx = appContext ?: return emptyList<android.net.Uri>() to paths
+        val sid = sessionIdProvider()
+        val resolved = mutableListOf<android.net.Uri>()
+        val missing = mutableListOf<String>()
+        fun sessionDir(kind: String): File? =
+            sid?.let { com.openminis.app.sandbox.SessionMounts.sessionDir(ctx.filesDir, it, kind) }
+        for (raw in paths) {
+            val path = raw.trim()
+            if (path.isEmpty()) continue
+            val file: File? = when {
+                path.startsWith("/var/minis/workspace/") ->
+                    sessionDir("workspace")?.let { File(it, path.removePrefix("/var/minis/workspace/")) }
+                path.startsWith("/var/minis/attachments/") ->
+                    sessionDir("attachments")?.let { File(it, path.removePrefix("/var/minis/attachments/")) }
+                path.startsWith("/var/minis/shared/") ->
+                    File(File(ctx.filesDir, "minis-global/shared"), path.removePrefix("/var/minis/shared/"))
+                path.startsWith("/") -> null
+                else -> sessionDir("workspace")?.let { File(it, path) }
+            }
+            if (file == null || !file.isFile) {
+                missing.add(raw)
+                continue
+            }
+            runCatching {
+                androidx.core.content.FileProvider.getUriForFile(
+                    ctx, "${ctx.packageName}.fileprovider", file,
+                )
+            }.onSuccess { resolved.add(it) }.onFailure { missing.add(raw) }
+        }
+        return resolved to missing
+    }
+
+    /**
+     * Deliver files to the parked picker (waits up to [UPLOAD_WAIT_MS] for the
+     * page to open one). An empty result set cancels the picker.
+     */
+    suspend fun deliverUpload(paths: List<String>): BrowserActionResult {
+        if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
+        val (uris, missing) = resolveUploadUris(paths)
+        if (uris.isEmpty()) {
+            return BrowserActionResult.error(
+                "No readable files to upload: ${missing.joinToString(", ")}",
+            )
+        }
+        var waited = 0L
+        while (pendingFileChooser == null && waited < UPLOAD_WAIT_MS) {
+            kotlinx.coroutines.delay(150)
+            waited += 150
+            if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
+        }
+        val cb = pendingFileChooser
+            ?: return BrowserActionResult.error(
+                "The page has not opened a file picker. Click the upload control first, then call upload_file within 10 s.",
+            )
+        pendingFileChooser = null
+        withContext(Dispatchers.Main) { cb.onReceiveValue(uris.toTypedArray()) }
+        val note = if (missing.isEmpty()) "" else " (could not read: ${missing.joinToString(", ")})"
+        return BrowserActionResult(text = "Delivered ${uris.size} file(s) to the page's file picker$note")
+    }
     private val _currentURL = MutableStateFlow("")
     val currentURL: StateFlow<String> = _currentURL.asStateFlow()
 
@@ -495,7 +627,17 @@ class BrowserUseManager(
                 view: WebView, request: WebResourceRequest
             ): android.webkit.WebResourceResponse? {
                 val url = request.url ?: return null
-                if (url.scheme != "minis") return null
+                if (url.scheme != "minis") {
+                    // [T-android-browser-observability] Record the request trail
+                    // (never bodies); data:/blob: are noise.
+                    if (url.scheme != "data" && url.scheme != "blob") {
+                        appendLog(
+                            networkLog,
+                            "${request.method} $url" + if (request.isForMainFrame) " [main]" else "",
+                        )
+                    }
+                    return null
+                }
                 return interceptMinisURL(url)
             }
         }
@@ -617,6 +759,39 @@ class BrowserUseManager(
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView, title: String?) {
                 _pageTitle.value = title ?: ""
+            }
+
+            // [T-android-browser-observability] Keep a bounded trail of page
+            // console output so the agent can read it (get_console_logs).
+            override fun onConsoleMessage(msg: android.webkit.ConsoleMessage?): Boolean {
+                if (msg != null) {
+                    val level = when (msg.messageLevel()) {
+                        android.webkit.ConsoleMessage.MessageLevel.ERROR -> "ERROR"
+                        android.webkit.ConsoleMessage.MessageLevel.WARNING -> "WARN"
+                        android.webkit.ConsoleMessage.MessageLevel.DEBUG -> "DEBUG"
+                        android.webkit.ConsoleMessage.MessageLevel.TIP -> "LOG"
+                        else -> "LOG"
+                    }
+                    appendLog(
+                        consoleLog,
+                        "$level: ${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})",
+                    )
+                }
+                return true
+            }
+
+            // [T-android-browser-observability] Park the page's file picker so
+            // the agent can answer it with upload_file; without this override
+            // <input type=file> silently does nothing in the pool WebView.
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<android.net.Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                if (isDisposed || filePathCallback == null) return false
+                pendingFileChooser?.onReceiveValue(null)
+                pendingFileChooser = filePathCallback
+                return true
             }
 
             override fun onCreateWindow(
@@ -761,6 +936,27 @@ class BrowserUseManager(
                 input.scrollCount, input.itemSelector, input.keywords,
             )
             BrowserAction.WAIT_FOR_DOM_STABLE -> return waitForDomStable(input.timeoutMs)
+            BrowserAction.UPLOAD_FILE -> return deliverUpload(input.files.orEmpty())
+            BrowserAction.GET_CONSOLE_LOGS -> {
+                val lines = readConsoleLog(input.logLevel, 100)
+                return BrowserActionResult(
+                    text = if (lines.isEmpty()) {
+                        "No console output captured for this tab."
+                    } else {
+                        "Console log (last ${lines.size} entries):\n" + lines.joinToString("\n")
+                    },
+                )
+            }
+            BrowserAction.GET_NETWORK_LOG -> {
+                val lines = readNetworkLog(input.filter, 100)
+                return BrowserActionResult(
+                    text = if (lines.isEmpty()) {
+                        "No network requests captured for this tab."
+                    } else {
+                        "Network log (last ${lines.size} requests):\n" + lines.joinToString("\n")
+                    },
+                )
+            }
             BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
         }
