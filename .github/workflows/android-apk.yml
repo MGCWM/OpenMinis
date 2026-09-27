@@ -142,6 +142,7 @@ jobs:
             --tests 'com.openminis.app.service.ForegroundNotificationPolicyTest' \
             --tests 'com.openminis.app.backup.BackupSelectionPolicyTest' \
             --tests 'com.openminis.app.service.SessionKeyPolicyTest'
+            --tests 'com.openminis.app.browser.ScreenshotBudgetTest'
 
       - name: assembleRelease
         working-directory: src/android

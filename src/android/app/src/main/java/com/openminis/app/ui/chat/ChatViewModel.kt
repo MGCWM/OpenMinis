@@ -11978,15 +11978,12 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         message.content.length.toLong() * 4 + message.toolBlocks.sumOf { it.content.length.toLong() * 4 }
     }
 
-    internal fun trimIdleBrowser() {
-        // Browser-pool idle trimming ships with the browser memory batch; this
-        // hook exists so the idle budget can call it once the pool exposes
-        // `trimIdleTabs()`.
-    }
+    internal fun trimIdleBrowser() { _browserTabPoolRef?.trimIdleTabs() }
 
     override fun onCleared() {
         unsubscribeSafeMode?.invoke()
         unsubscribeSafeMode = null
+        _browserTabPoolRef?.dispose()
         super.onCleared()
         // Tear down whichever shell was actually serving this VM — unless the
         // idle budget deliberately kept it alive for a quick re-open.
