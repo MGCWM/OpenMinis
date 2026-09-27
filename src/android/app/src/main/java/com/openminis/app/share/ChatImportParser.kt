@@ -51,6 +51,9 @@ object ChatImportParser {
     const val ENTRY_MESSAGES_TXT = "messages.txt"
     const val ENTRY_SESSION = "session.json"
 
+    /** [T-android-batch-export] Top-level manifest of a multi-session archive. */
+    const val ENTRY_BATCH_MANIFEST = "minis-batch-manifest.json"
+
     /**
      * Ceiling for the `{session, messages}` object shape, which must be parsed
      * whole (see class doc). 8 MiB is far above a hand-made file and far below
@@ -73,6 +76,48 @@ object ChatImportParser {
 
     /** Value part types that carry a file payload the archive does NOT hold. */
     private val MEDIA_TYPES = setOf("mediaref", "image", "image_url", "video", "video_url", "file")
+
+    // ─── Batch archives [T-android-batch-export] ──────────────────────────
+
+    /** True when [file] is a zip carrying a batch manifest at its root. */
+    fun isBatchArchive(file: File): Boolean =
+        looksLikeZip(file) && zipEntryNames(file).contains(ENTRY_BATCH_MANIFEST)
+
+    /** Parse the manifest of a batch archive into its session entries. */
+    fun readBatchManifest(file: File): List<BatchSessionEntry> {
+        val stream = openEntry(file, ENTRY_BATCH_MANIFEST)
+            ?: throw ChatImportException("Archive holds no $ENTRY_BATCH_MANIFEST")
+        val text = stream.use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        val root = try {
+            JSONObject(text)
+        } catch (_: Throwable) {
+            throw ChatImportException("Batch manifest is not valid JSON")
+        }
+        val arr = root.optJSONArray("sessions") ?: JSONArray()
+        val out = mutableListOf<BatchSessionEntry>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val dir = o.optString("dir").trim().trimEnd('/')
+            if (dir.isEmpty()) continue
+            out.add(
+                BatchSessionEntry(
+                    dir = dir,
+                    title = o.optString("title").takeIf { it.isNotBlank() },
+                    messageCount = o.optInt("message_count", -1).takeIf { it >= 0 },
+                ),
+            )
+        }
+        if (out.isEmpty()) throw ChatImportException("Batch manifest lists no sessions")
+        return out
+    }
+
+    /** Transcript format inside a batch archive (from the manifest's own field). */
+    fun batchFormatFor(file: File): ImportFormat {
+        val stream = openEntry(file, ENTRY_BATCH_MANIFEST) ?: return ImportFormat.ZIP_JSON
+        val text = stream.use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        val fmt = try { JSONObject(text).optString("format") } catch (_: Throwable) { "" }
+        return if (fmt == "text") ImportFormat.ZIP_TEXT else ImportFormat.ZIP_JSON
+    }
 
     // ─── Format detection ──────────────────────────────────────────────────
 
@@ -98,14 +143,14 @@ object ChatImportParser {
 
     // ─── Header ────────────────────────────────────────────────────────────
 
-    fun readHeader(file: File, format: ImportFormat): ImportedHeader = when (format) {
-        ImportFormat.ZIP_JSON, ImportFormat.ZIP_TEXT -> readZipHeader(file)
+    fun readHeader(file: File, format: ImportFormat, entryPrefix: String = ""): ImportedHeader = when (format) {
+        ImportFormat.ZIP_JSON, ImportFormat.ZIP_TEXT -> readZipHeader(file, entryPrefix)
         ImportFormat.JSON -> objectShape(file)?.let { headerFrom(it) } ?: ImportedHeader()
         ImportFormat.TEXT -> ImportedHeader(title = textTranscriptTitle(file))
     }
 
-    private fun readZipHeader(file: File): ImportedHeader {
-        val entryStream = openEntry(file, ENTRY_SESSION) ?: return ImportedHeader()
+    private fun readZipHeader(file: File, entryPrefix: String): ImportedHeader {
+        val entryStream = openEntry(file, entryPrefix + ENTRY_SESSION) ?: return ImportedHeader()
         return entryStream.use { stream ->
             val text = stream.readBytes().toString(StandardCharsets.UTF_8)
             if (text.isBlank()) return@use ImportedHeader()
@@ -154,20 +199,21 @@ object ChatImportParser {
     suspend fun forEachMessage(
         file: File,
         format: ImportFormat,
+        entryPrefix: String = "",
         block: suspend (ImportedMessage) -> Unit,
     ): Int =
         when (format) {
             ImportFormat.ZIP_JSON -> {
-                val stream = openEntry(file, ENTRY_MESSAGES_JSON)
-                    ?: throw ChatImportException("Archive holds no $ENTRY_MESSAGES_JSON")
+                val stream = openEntry(file, entryPrefix + ENTRY_MESSAGES_JSON)
+                    ?: throw ChatImportException("Archive holds no ${entryPrefix}$ENTRY_MESSAGES_JSON")
                 // `use` is inline, so the suspending callback below is still
                 // part of this coroutine (the stream stays open across it).
                 stream.use { streamJsonArray(it.reader(), block) }
             }
 
             ImportFormat.ZIP_TEXT -> {
-                val stream = openEntry(file, ENTRY_MESSAGES_TXT)
-                    ?: throw ChatImportException("Archive holds no $ENTRY_MESSAGES_TXT")
+                val stream = openEntry(file, entryPrefix + ENTRY_MESSAGES_TXT)
+                    ?: throw ChatImportException("Archive holds no ${entryPrefix}$ENTRY_MESSAGES_TXT")
                 stream.use { streamTextTranscript(it.reader(), block) }
             }
 

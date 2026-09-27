@@ -116,6 +116,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
@@ -123,6 +124,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -626,6 +628,10 @@ fun SessionListScreen(
     // greyed-out files. ChatImportParser rejects what it cannot read, with a
     // message that says so.
     var importState by remember { mutableStateOf<ImportUiState?>(null) }
+    // [T-android-batch-export] A picked batch package awaiting per-session
+    // selection, plus the selection-toolbar export's format picker.
+    var batchImport by remember { mutableStateOf<BatchImportPending?>(null) }
+    var batchExportFormat by remember { mutableStateOf(false) }
     val importedCount by com.openminis.app.share.ChatImporter.importedCount.collectAsState()
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
@@ -636,6 +642,16 @@ fun SessionListScreen(
         // dialog must not flash the previous import's total on entry.
         scope.launch {
             try {
+                // [T-android-batch-export] A multi-session package offers
+                // per-session selection first; everything else imports as one.
+                val batchEntries = runCatching {
+                    com.openminis.app.share.ChatImporter.peekBatch(context, uri)
+                }.getOrNull()
+                if (batchEntries != null) {
+                    importState = null
+                    batchImport = BatchImportPending(uri = uri, entries = batchEntries)
+                    return@launch
+                }
                 importState = ImportUiState.Done(
                     com.openminis.app.share.ChatImporter.importChat(
                         context = context,
@@ -1306,7 +1322,7 @@ fun SessionListScreen(
                 // Selection toolbar at bottom (matching iOS: Export + Delete)
                 SelectionToolbar(
                     selectedCount = selectedIds.size,
-                    onExport = { /* TODO: export */ },
+                    onExport = { if (selectedIds.isNotEmpty()) batchExportFormat = true },
                     onMove = { viewModel.requestGroupPickerForSelection() },
                     onDelete = { showBulkDeleteDialog = true },
                     modifier = Modifier.align(Alignment.BottomCenter),
@@ -1538,6 +1554,57 @@ fun SessionListScreen(
     // than a Toast because the success case has three things worth saying —
     // how many messages arrived, which model the chat ended up on, and what
     // the archive could not carry — plus the obvious next action (open it).
+    // [T-android-batch-export] Format picker for the selection-toolbar export.
+    if (batchExportFormat) {
+        MinisAlertDialog(
+            onDismissRequest = { batchExportFormat = false },
+            title = stringResource(R.string.sessionlist_export),
+            text = stringResource(R.string.sessionlist_export_choose_format),
+            confirmText = stringResource(R.string.sessionlist_export_json),
+            onConfirm = {
+                batchExportFormat = false
+                exportSelectedSessions(context, viewModel, chatRepository, scope, "json")
+            },
+            dismissText = stringResource(R.string.sessionlist_export_plain),
+            onDismiss = {
+                batchExportFormat = false
+                exportSelectedSessions(context, viewModel, chatRepository, scope, "text")
+            },
+        )
+    }
+
+    // [T-android-batch-export] Per-session picker for a batch package.
+    batchImport?.let { pending ->
+        BatchImportDialog(
+            entries = pending.entries,
+            onCancel = { batchImport = null },
+            onConfirm = { dirs ->
+                batchImport = null
+                importState = ImportUiState.Running
+                scope.launch {
+                    try {
+                        importState = ImportUiState.BatchDone(
+                            com.openminis.app.share.ChatImporter.importBatch(
+                                context = context,
+                                uri = pending.uri,
+                                selectedDirs = dirs,
+                                repository = chatRepository,
+                                providerRepository = providerRepository,
+                                fallbackTitle = context.getString(R.string.sessionlist_import),
+                            ),
+                        )
+                    } catch (t: kotlinx.coroutines.CancellationException) {
+                        throw t
+                    } catch (t: Throwable) {
+                        importState = ImportUiState.Failed(
+                            t.message ?: context.getString(R.string.import_failed_title),
+                        )
+                    }
+                }
+            },
+        )
+    }
+
     when (val state = importState) {
         null -> Unit
 
@@ -1568,6 +1635,37 @@ fun SessionListScreen(
                 },
                 dismissText = stringResource(R.string.import_close),
                 onDismiss = { importState = null },
+            )
+        }
+
+        is ImportUiState.BatchDone -> {
+            val result = state.result
+            MinisAlertDialog(
+                onDismissRequest = { importState = null },
+                title = stringResource(R.string.batch_import_title),
+                text = buildString {
+                    append(
+                        context.getString(
+                            R.string.batch_import_done,
+                            result.imported.size,
+                            result.totalMessages,
+                        ),
+                    )
+                    if (result.failures.isNotEmpty()) {
+                        append("\n\n")
+                        append(
+                            context.getString(
+                                R.string.batch_import_failed_some,
+                                result.failures.size,
+                                result.failures.joinToString("; ") {
+                                    (it.title ?: it.dir).take(32) + ": " + it.message
+                                },
+                            ),
+                        )
+                    }
+                },
+                confirmText = stringResource(R.string.import_close),
+                onConfirm = { importState = null },
             )
         }
 
@@ -3524,6 +3622,50 @@ private fun exportSession(
 }
 
 
+/**
+ * [T-android-batch-export] Export every session in the selection toolbar as a
+ * single batch archive and hand it to the share sheet. The selection is
+ * cleared right away so returning from the sheet lands on a normal list.
+ */
+private fun exportSelectedSessions(
+    context: Context,
+    viewModel: SessionListViewModel,
+    chatRepository: ChatRepository,
+    scope: kotlinx.coroutines.CoroutineScope,
+    format: String,
+) {
+    val sessions = viewModel.selectedSessionEntities()
+    if (sessions.isEmpty()) return
+    viewModel.clearSelection()
+    scope.launch {
+        try {
+            val (uri, _) = com.openminis.app.share.ChatExporter.exportBatchToZip(
+                context = context,
+                sessions = sessions,
+                repository = chatRepository,
+                format = format,
+            )
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.sessionlist_export))
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(
+                intent,
+                context.getString(R.string.sessionlist_export),
+            ).apply { addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            context.startActivity(chooser)
+        } catch (t: Throwable) {
+            android.widget.Toast.makeText(
+                context,
+                context.getString(R.string.export_progress_failed),
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+        }
+    }
+}
+
 // ─── Import Session ────────────────────────────────────────────────────────
 
 /**
@@ -3539,8 +3681,123 @@ private sealed interface ImportUiState {
     /** Committed. [result] drives the confirmation dialog. */
     data class Done(val result: com.openminis.app.share.ChatImporter.Result) : ImportUiState
 
+    /** [T-android-batch-export] A batch package committed. */
+    data class BatchDone(val result: com.openminis.app.share.ChatImporter.BatchResult) : ImportUiState
+
     /** Nothing was written — [ChatImporter] rolls its partial session back. */
     data class Failed(val message: String) : ImportUiState
+}
+
+// [T-android-batch-export] A picked multi-session package: the uri is kept so
+// the selection dialog can import exactly what the user checks.
+private data class BatchImportPending(
+    val uri: android.net.Uri,
+    val entries: List<com.openminis.app.share.BatchSessionEntry>,
+)
+
+/**
+ * [T-android-batch-export] Per-session picker for a batch package. Every entry
+ * starts checked; the confirm button imports the checked subset and stays
+ * disabled at zero.
+ */
+@Composable
+private fun BatchImportDialog(
+    entries: List<com.openminis.app.share.BatchSessionEntry>,
+    onCancel: () -> Unit,
+    onConfirm: (List<String>) -> Unit,
+) {
+    val selected = remember(entries) {
+        androidx.compose.runtime.mutableStateMapOf<String, Boolean>().apply {
+            entries.forEach { put(it.dir, true) }
+        }
+    }
+    val checkedCount = selected.count { it.value }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onCancel) {
+        Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(
+                    stringResource(R.string.batch_import_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.batch_import_select_hint, entries.size),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier.heightIn(max = 320.dp),
+                ) {
+                    items(entries, key = { it.dir }) { entry ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selected[entry.dir] = !(selected[entry.dir] ?: true)
+                                }
+                                .padding(vertical = 2.dp),
+                        ) {
+                            Checkbox(
+                                checked = selected[entry.dir] ?: true,
+                                onCheckedChange = { selected[entry.dir] = it },
+                            )
+                            Column(Modifier.padding(start = 4.dp)) {
+                                Text(
+                                    entry.title?.takeIf { it.isNotBlank() }
+                                        ?: entry.dir.substringAfterLast('/'),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                entry.messageCount?.let {
+                                    Text(
+                                        stringResource(R.string.batch_import_messages, it),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    TextButton(onClick = {
+                        val allChecked = selected.values.all { it }
+                        entries.forEach { selected[it.dir] = !allChecked }
+                    }) {
+                        Text(
+                            stringResource(
+                                if (checkedCount == entries.size) R.string.batch_import_deselect_all
+                                else R.string.batch_import_select_all,
+                            ),
+                        )
+                    }
+                    Row {
+                        TextButton(onClick = onCancel) {
+                            Text(stringResource(R.string.cancel))
+                        }
+                        TextButton(
+                            onClick = {
+                                onConfirm(
+                                    entries.filter { selected[it.dir] ?: true }.map { it.dir },
+                                )
+                            },
+                            enabled = checkedCount > 0,
+                        ) {
+                            Text(stringResource(R.string.batch_import_confirm, checkedCount))
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**

@@ -378,6 +378,10 @@ class SessionListViewModel(
         selectedIds.value = _allSessions.value.map { it.id }.toSet()
     }
 
+    /** [T-android-batch-export] Selected sessions, in list order. */
+    fun selectedSessionEntities(): List<ChatSessionEntity> =
+        _allSessions.value.filter { it.id in selectedIds.value }
+
     fun clearSelection() {
         selectedIds.value = emptySet()
         isSelecting.value = false

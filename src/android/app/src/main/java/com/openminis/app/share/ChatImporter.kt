@@ -110,18 +110,161 @@ object ChatImporter {
             throw ChatImportException("Could not create a staging directory")
         }
         val staged = File(workDir, "import.bin")
-        var sessionId: String? = null
         try {
             copyToFile(context, uri, staged)
-
             val format = ChatImportParser.detectFormat(staged)
-            val header = ChatImportParser.readHeader(staged, format)
-            val title = resolveTitle(header, displayNameOf(context, uri), fallbackTitle)
-            val resolved = resolveModel(header.modelId, providerRepository)
+            importStagedSession(
+                context = context,
+                staged = staged,
+                format = format,
+                entryPrefix = "",
+                fileName = displayNameOf(context, uri),
+                fallbackTitle = fallbackTitle,
+                repository = repository,
+                providerRepository = providerRepository,
+            )
+        } catch (t: Throwable) {
+            AppLogger.error(TAG, "import failed: ${t::class.java.simpleName}: ${t.message}")
+            if (t is CancellationException) throw t
+            throw if (t is ChatImportException) t else {
+                ChatImportException(t.message ?: "The file could not be imported")
+            }
+        } finally {
+            runCatching { workDir.deleteRecursively() }
+        }
+    }
 
-            val now = System.currentTimeMillis()
-            sessionId = UUID.randomUUID().toString()
-            val sessionCreatedAt = header.createdAt ?: header.updatedAt ?: now
+    /**
+     * [T-android-batch-export] Look at [uri] WITHOUT importing it: a batch
+     * archive returns its session list so the UI can offer per-session
+     * selection; anything else (or a single-session package) returns null and
+     * the caller proceeds straight to [importChat].
+     */
+    suspend fun peekBatch(context: Context, uri: Uri): List<BatchSessionEntry>? =
+        withContext(Dispatchers.IO) {
+            val workDir = File(File(context.cacheDir, "import-staging"), UUID.randomUUID().toString())
+            if (!workDir.mkdirs() && !workDir.isDirectory) return@withContext null
+            val staged = File(workDir, "peek.bin")
+            try {
+                copyToFile(context, uri, staged)
+                if (!ChatImportParser.isBatchArchive(staged)) null
+                else ChatImportParser.readBatchManifest(staged).takeIf { it.size > 1 }
+            } finally {
+                runCatching { workDir.deleteRecursively() }
+            }
+        }
+
+    /** One batch member that failed; the rest of the batch continues. */
+    data class BatchFailure(val dir: String, val title: String?, val message: String)
+
+    /** What a batch import produced, for the confirmation dialog. */
+    data class BatchResult(
+        val imported: List<Result>,
+        val failures: List<BatchFailure>,
+    ) {
+        val totalMessages: Int get() = imported.sumOf { it.messageCount }
+    }
+
+    /**
+     * Import the selected members of a batch archive, each as its own new
+     * conversation. One member's failure never sinks the others: it is rolled
+     * back on its own and reported in [BatchResult].
+     */
+    suspend fun importBatch(
+        context: Context,
+        uri: Uri,
+        selectedDirs: List<String>,
+        repository: ChatRepository,
+        providerRepository: ProviderRepository,
+        fallbackTitle: String,
+    ): BatchResult = withContext(Dispatchers.IO) {
+        _importedCount.value = 0
+        val workDir = File(File(context.cacheDir, "import-staging"), UUID.randomUUID().toString())
+        if (!workDir.mkdirs() && !workDir.isDirectory) {
+            throw ChatImportException("Could not create a staging directory")
+        }
+        val staged = File(workDir, "import.bin")
+        try {
+            copyToFile(context, uri, staged)
+            val entries = ChatImportParser.readBatchManifest(staged)
+            val format = ChatImportParser.batchFormatFor(staged)
+            val selected = selectedDirs.toSet()
+            val wanted = entries.filter { it.dir in selected }
+            if (wanted.isEmpty()) throw ChatImportException("Nothing selected to import")
+            val imported = mutableListOf<Result>()
+            val failures = mutableListOf<BatchFailure>()
+            var doneMessages = 0
+            for (entry in wanted) {
+                try {
+                    val result = importStagedSession(
+                        context = context,
+                        staged = staged,
+                        format = format,
+                        entryPrefix = entry.dir.trimEnd('/') + "/",
+                        fileName = null,
+                        fallbackTitle = entry.title ?: fallbackTitle,
+                        repository = repository,
+                        providerRepository = providerRepository,
+                    )
+                    imported.add(result)
+                    doneMessages += result.messageCount
+                    _importedCount.value = doneMessages
+                } catch (t: CancellationException) {
+                    throw t
+                } catch (t: Throwable) {
+                    AppLogger.warning(
+                        TAG,
+                        "batch member ${entry.dir} failed: ${t::class.java.simpleName}: ${t.message}",
+                    )
+                    failures.add(
+                        BatchFailure(
+                            dir = entry.dir,
+                            title = entry.title,
+                            message = t.message ?: "Import failed",
+                        ),
+                    )
+                }
+            }
+            if (imported.isEmpty()) {
+                throw ChatImportException(
+                    failures.firstOrNull()?.message ?: "Nothing could be imported",
+                )
+            }
+            AppLogger.info(
+                TAG,
+                "batch import: ${imported.size} ok, ${failures.size} failed, $doneMessages message(s)",
+            )
+            BatchResult(imported = imported, failures = failures)
+        } finally {
+            runCatching { workDir.deleteRecursively() }
+        }
+    }
+
+    /**
+     * Store one parsed session — a plain package when [entryPrefix] is empty,
+     * a batch member otherwise — as a new conversation. Rolls its own
+     * half-written session back on failure. See the class doc for the id /
+     * title / model / timestamp decisions, which are unchanged from the
+     * original single-file path.
+     */
+    private suspend fun importStagedSession(
+        context: Context,
+        staged: File,
+        format: ImportFormat,
+        entryPrefix: String,
+        fileName: String?,
+        fallbackTitle: String,
+        repository: ChatRepository,
+        providerRepository: ProviderRepository,
+    ): Result {
+        val header = ChatImportParser.readHeader(staged, format, entryPrefix)
+        val title = resolveTitle(header, fileName, fallbackTitle)
+        val resolved = resolveModel(header.modelId, providerRepository)
+
+        val now = System.currentTimeMillis()
+        val sessionId = UUID.randomUUID().toString()
+        val sessionCreatedAt = header.createdAt ?: header.updatedAt ?: now
+        return try {
             repository.dao.insertSession(
                 ChatSessionEntity(
                     id = sessionId,
@@ -150,22 +293,20 @@ object ChatImporter {
 
             // Local suspend function: the parser's callback is a suspend
             // lambda, so each batch can be awaited before the next message is
-            // read — back pressure for free (and the reason the callback type
-            // is `suspend` rather than a plain function type).
+            // read — back pressure for free.
             suspend fun drain() {
                 if (batch.isEmpty()) return
                 repository.dao.insertMessages(ArrayList(batch))
                 batch.clear()
             }
 
-            ChatImportParser.forEachMessage(staged, format) { msg ->
+            ChatImportParser.forEachMessage(staged, format, entryPrefix) { msg ->
                 val ts = if (msg.createdAt != null && msg.createdAt > 0) {
                     lastTs = msg.createdAt
                     msg.createdAt
                 } else {
-                    // Timestamp-less sources (plain-text transcripts) keep
-                    // their order by advancing one second per message from
-                    // wherever the previous one landed.
+                    // Timestamp-less sources keep their order by advancing one
+                    // second per message.
                     lastTs += 1000L
                     lastTs
                 }
@@ -179,7 +320,7 @@ object ChatImporter {
                 batch.add(
                     MessageEntity(
                         id = UUID.randomUUID().toString(),
-                        sessionId = sessionId!!,
+                        sessionId = sessionId,
                         role = msg.role,
                         partsJson = capped,
                         createdAt = ts,
@@ -188,9 +329,7 @@ object ChatImporter {
                         reasoningContent = msg.reasoning,
                         updatedAt = ts,
                         // Attribution columns stay null: an imported turn was
-                        // not served by any model on THIS device, and null is
-                        // exactly how the Usage page says "estimated from the
-                        // session" instead of inventing a measurement.
+                        // not served by any model on THIS device.
                     ),
                 )
                 written++
@@ -209,21 +348,21 @@ object ChatImporter {
             // Mirror appendMessage's session bookkeeping: preview when the
             // last message yields one, otherwise just keep the row recent.
             if (lastPreview != null) {
-                repository.dao.updateLastMessage(sessionId!!, lastPreview, now)
+                repository.dao.updateLastMessage(sessionId, lastPreview, now)
             } else {
-                repository.dao.touchSession(sessionId!!, now)
+                repository.dao.touchSession(sessionId, now)
             }
 
             AppLogger.info(
                 TAG,
-                "imported $written message(s) from ${format.label} into ${sessionId!!.take(8)} " +
+                "imported $written message(s) from ${format.label} into ${sessionId.take(8)} " +
                     "(title=${title.take(24)}, model=${resolved.modelId}" +
                     (if (resolved.remapped) " [fallback for ${resolved.original}]" else "") +
                     ", mediaRefs=$mediaRefs)",
             )
 
             Result(
-                sessionId = sessionId!!,
+                sessionId = sessionId,
                 title = title,
                 messageCount = written,
                 mediaRefCount = mediaRefs,
@@ -235,17 +374,9 @@ object ChatImporter {
         } catch (t: Throwable) {
             // Roll back the half-written conversation. The message rows hang
             // off the session by foreign key, so one delete takes them too.
-            sessionId?.let { id ->
-                runCatching { repository.deleteSession(id) }
-                    .onFailure { AppLogger.warning(TAG, "rollback of $id failed: ${it.message}") }
-            }
-            AppLogger.error(TAG, "import failed: ${t::class.java.simpleName}: ${t.message}")
-            if (t is CancellationException) throw t
-            throw if (t is ChatImportException) t else {
-                ChatImportException(t.message ?: "The file could not be imported")
-            }
-        } finally {
-            runCatching { workDir.deleteRecursively() }
+            runCatching { repository.deleteSession(sessionId) }
+                .onFailure { AppLogger.warning(TAG, "rollback of $sessionId failed: ${it.message}") }
+            throw t
         }
     }
 

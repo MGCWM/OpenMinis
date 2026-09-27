@@ -39,6 +39,17 @@ data class ImportedMessage(
     val mediaRefs: Int = 0,
 )
 
+/**
+ * One conversation inside a multi-session batch archive
+ * ([T-android-batch-export]; see ChatExporter.exportBatchToZip).
+ */
+data class BatchSessionEntry(
+    /** Folder inside the archive, e.g. `sessions/001_My_chat`. */
+    val dir: String,
+    val title: String?,
+    val messageCount: Int?,
+)
+
 /** What the picked file turned out to be. `label` is logged, never shown raw. */
 enum class ImportFormat(val label: String) {
     ZIP_JSON("zip/json"),

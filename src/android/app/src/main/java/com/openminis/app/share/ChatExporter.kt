@@ -134,6 +134,114 @@ object ChatExporter {
         }
     }
 
+    /** Result of a multi-session export: how many conversations, how many messages. */
+    data class BatchSummary(val sessionCount: Int, val totalMessages: Int)
+
+    /**
+     * [T-android-batch-export] Stream-export [sessions] into ONE archive:
+     * per-session folders (`messages.<ext>` + `session.json`) plus a top-level
+     * `minis-batch-manifest.json` the importer reads to offer per-session
+     * restore. A single selected session falls back to the plain single
+     * layout, so "select one" stays byte-identical to long-press export.
+     */
+    suspend fun exportBatchToZip(
+        context: Context,
+        sessions: List<ChatSessionEntity>,
+        repository: ChatRepository,
+        format: String,
+    ): Pair<Uri, BatchSummary> = withContext(Dispatchers.IO) {
+        if (sessions.isEmpty()) throw IllegalStateException("no sessions to export")
+        if (sessions.size == 1) {
+            val (uri, single) = exportToZip(context, sessions.first(), repository, format)
+            return@withContext uri to BatchSummary(1, single.messageCount)
+        }
+        val isJson = format == "json"
+        val ext = if (isJson) "json" else "txt"
+        val stagingRoot = File(context.cacheDir, "export-staging")
+        val workDir = File(stagingRoot, UUID.randomUUID().toString())
+        if (!workDir.mkdirs() && !workDir.isDirectory) {
+            throw IllegalStateException("export-staging mkdir failed: ${workDir.absolutePath}")
+        }
+        try {
+            val manifestSessions = JSONArray()
+            val filesToZip = mutableListOf<Pair<String, File>>()
+            var totalMessages = 0
+            sessions.forEachIndexed { index, session ->
+                val safeTitle = (session.title ?: "conversation")
+                    .replace(Regex("[^A-Za-z0-9_-]+"), "_")
+                    .take(40)
+                    .ifEmpty { "conversation" }
+                val dirName = "sessions/%03d_%s".format(index + 1, safeTitle)
+                val dir = File(workDir, dirName).apply { mkdirs() }
+                val transcriptFile = File(dir, "messages.$ext")
+                val summary = streamTranscript(repository, session, isJson, transcriptFile)
+                val metaFile = File(dir, "session.json")
+                writeSessionMeta(metaFile, session, summary)
+                totalMessages += summary.messageCount
+                filesToZip.add("$dirName/messages.$ext" to transcriptFile)
+                filesToZip.add("$dirName/session.json" to metaFile)
+                manifestSessions.put(
+                    JSONObject().apply {
+                        put("dir", dirName)
+                        put("id", session.id)
+                        put("title", session.title ?: "")
+                        put("message_count", summary.messageCount)
+                        put("format", summary.format)
+                    },
+                )
+            }
+            val manifestFile = File(workDir, "minis-batch-manifest.json")
+            manifestFile.writeText(
+                JSONObject().apply {
+                    put("app", "minis-android")
+                    put("kind", "minis-batch")
+                    put("version", 1)
+                    put("exported_at", System.currentTimeMillis())
+                    put("format", format)
+                    put("sessions", manifestSessions)
+                }.toString(2),
+                Charsets.UTF_8,
+            )
+
+            val sharedDir = File(context.cacheDir, "shared").apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US)
+                .format(java.util.Date())
+            val zipFile = File(sharedDir, "minis-batch-${sessions.size}sessions-$stamp.zip")
+            if (zipFile.exists()) zipFile.delete()
+
+            ZipOutputStream(FileOutputStream(zipFile).buffered()).use { zos ->
+                zipFileEntry(zos, "minis-batch-manifest.json", manifestFile)
+                for ((name, file) in filesToZip) zipFileEntry(zos, name, file)
+            }
+
+            val authority = "${context.packageName}.fileprovider"
+            val uri = FileProvider.getUriForFile(context, authority, zipFile)
+            _progress.value = Progress.Done(
+                uri,
+                Summary(
+                    format = "batch",
+                    messageCount = totalMessages,
+                    firstCreatedAt = null,
+                    lastCreatedAt = null,
+                    imageAttachments = 0,
+                    videoAttachments = 0,
+                    estimatedBytes = zipFile.length(),
+                ),
+            )
+            AppLogger.info(
+                LOG_CATEGORY,
+                "exportBatchToZip ok: ${zipFile.absolutePath} (${sessions.size} sessions, $totalMessages msgs)",
+            )
+            uri to BatchSummary(sessions.size, totalMessages)
+        } catch (t: Throwable) {
+            _progress.value = Progress.Failed(t)
+            AppLogger.error(LOG_CATEGORY, "exportBatchToZip failed: ${t.message}")
+            throw t
+        } finally {
+            runCatching { workDir.deleteRecursively() }
+        }
+    }
+
     private suspend fun streamTranscript(
         repository: ChatRepository,
         session: ChatSessionEntity,

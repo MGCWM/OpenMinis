@@ -575,6 +575,16 @@
     <string name="sessionlist_unpin">Unpin</string>
     <string name="sessionlist_export">Export</string>
     <string name="sessionlist_export_json">JSON</string>
+    <!-- [T-android-batch-export] Multi-select export + per-session batch import. -->
+    <string name="sessionlist_export_choose_format">Choose the export format</string>
+    <string name="batch_import_title">Import conversations</string>
+    <string name="batch_import_select_hint">This package holds %1$d conversations. Choose which to import:</string>
+    <string name="batch_import_messages">%1$d messages</string>
+    <string name="batch_import_select_all">Select all</string>
+    <string name="batch_import_deselect_all">Deselect all</string>
+    <string name="batch_import_confirm">Import (%1$d)</string>
+    <string name="batch_import_done">Imported %1$d conversations (%2$d messages).</string>
+    <string name="batch_import_failed_some">%1$d failed: %2$s</string>
     <string name="sessionlist_export_plain">Plain Text</string>
     <!-- [T-android-chat-import] Inverse of the long-press export: -->
     <!-- read an exported transcript back into the session list. -->

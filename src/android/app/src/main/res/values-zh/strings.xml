@@ -515,6 +515,16 @@
     <string name="sessionlist_unpin">取消置顶</string>
     <string name="sessionlist_export">导出</string>
     <string name="sessionlist_export_json">JSON</string>
+    <!-- [T-android-batch-export] 多选导出 + 批量按会话导入。 -->
+    <string name="sessionlist_export_choose_format">选择导出格式</string>
+    <string name="batch_import_title">导入会话</string>
+    <string name="batch_import_select_hint">此备份包含 %1$d 个会话，选择要导入的：</string>
+    <string name="batch_import_messages">%1$d 条消息</string>
+    <string name="batch_import_select_all">全选</string>
+    <string name="batch_import_deselect_all">取消全选</string>
+    <string name="batch_import_confirm">导入（%1$d）</string>
+    <string name="batch_import_done">已导入 %1$d 个会话（共 %2$d 条消息）。</string>
+    <string name="batch_import_failed_some">%1$d 个失败：%2$s</string>
     <string name="sessionlist_export_plain">纯文本</string>
     <!-- [T-android-chat-import] Inverse of the long-press export: -->
     <!-- read an exported transcript back into the session list. -->
