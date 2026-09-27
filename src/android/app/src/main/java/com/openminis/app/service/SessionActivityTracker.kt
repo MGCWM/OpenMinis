@@ -26,6 +26,13 @@ object SessionActivityTracker {
 
     private const val TAG = "SessionTracker"
 
+    /**
+     * [T-android-sandbox-keepalive-open] Prefix of FGS keep-alive keys minted
+     * by SandboxJobKeepAlive — these pin the service while a shell command
+     * runs and are never chat ids.
+     */
+    internal const val SANDBOX_KEEPALIVE_PREFIX = "sandbox:"
+
     private val _activeSessions = MutableStateFlow<Set<String>>(emptySet())
     val activeSessions: StateFlow<Set<String>> = _activeSessions.asStateFlow()
 
@@ -309,6 +316,16 @@ object SessionActivityTracker {
     }
 
     /**
+     * [T-android-sandbox-keepalive-open] True when [id] names a real chat (or
+     * a draft), false for FGS keep-alive keys like `sandbox:<id>`. The
+     * overlay tap-to-open and the `minis://session/<id>` deep link must
+     * filter on this — a keep-alive key resolves to no session and the user
+     * would land on a blank conversation.
+     */
+    fun isChatScopedSessionId(id: String?): Boolean =
+        id != null && id.isNotBlank() && !id.startsWith(SANDBOX_KEEPALIVE_PREFIX)
+
+    /**
      * Marks a session as active. Starts the foreground service if this is
      * the first active session. [onStop], when supplied, is the agent
      * loop's cancel callback — captured here so the notification's Stop
@@ -328,11 +345,20 @@ object SessionActivityTracker {
         // driving the overlay so the tap-to-open intent lands in the
         // right chat. Clear the previous reply excerpt so the user
         // doesn't briefly see a stale reply attached to a fresh run.
-        _currentSessionId.value = sessionId
-        _lastReplyExcerpt.value = null
-        _lastToolName.value = null
-        _lastToolTitle.value = null
-        _lastToolStatus.value = null
+        //
+        // [T-android-sandbox-keepalive-open] Sandbox keep-alive keys are not
+        // chats: letting one become `currentSessionId` made the floating
+        // overlay's tap-to-open emit `minis://session/sandbox:<id>`, which
+        // resolves to no session — the reported "returns to a blank
+        // conversation". Keep the chat-scoped pointers untouched for those
+        // keys; the running count, tool status and service still update.
+        if (isChatScopedSessionId(sessionId)) {
+            _currentSessionId.value = sessionId
+            _lastReplyExcerpt.value = null
+            _lastToolName.value = null
+            _lastToolTitle.value = null
+            _lastToolStatus.value = null
+        }
         // [T-android-live-update-completed] A new run supersedes any completed
         // resting state — drop the finish stamp so the notification goes back to
         // a live ticking timer instead of staying frozen at the previous total,

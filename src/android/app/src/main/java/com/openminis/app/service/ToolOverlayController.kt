@@ -644,6 +644,10 @@ class ToolOverlayController(private val context: Context) {
     private fun onTap() {
         try {
             val sid = pendingSessionId
+            // [T-android-sandbox-keepalive-open] Never deep-link a keep-alive
+            // key (`sandbox:<id>`): it is not a chat and would resolve to a
+            // blank conversation. Those fall back to plain "bring to front".
+            val chatId = sid?.takeIf { SessionActivityTracker.isChatScopedSessionId(it) }
             val launchIntent = Intent(
                 context,
                 Class.forName("com.openminis.app.MainActivity"),
@@ -651,11 +655,10 @@ class ToolOverlayController(private val context: Context) {
                 // [T-android-overlay-reply-status-34599] When we have a
                 // tracked session, route the tap through the existing
                 // `minis://session/<id>` deep-link so MainActivity's
-                // DeepLinkHandler navigates to that chat. When sid is
-                // null (e.g. completion observed before any session was
-                // pushed), fall back to plain "bring to front".
-                if (!sid.isNullOrBlank()) {
-                    data = Uri.parse("minis://session/$sid")
+                // DeepLinkHandler navigates to that chat. When no chat id is
+                // available, fall back to plain "bring to front".
+                if (!chatId.isNullOrBlank()) {
+                    data = Uri.parse("minis://session/$chatId")
                 }
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_SINGLE_TOP or

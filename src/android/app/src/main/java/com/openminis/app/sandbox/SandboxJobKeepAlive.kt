@@ -22,7 +22,7 @@ object SandboxJobKeepAlive {
         if (sessionId.startsWith("__")) return
         inflight.add(sessionId)
         remember(context, sessionId)
-        val key = "sandbox:$sessionId"
+        val key = SessionActivityTracker.SANDBOX_KEEPALIVE_PREFIX + sessionId
         SessionActivityTracker.setActive(key)
         SessionActivityTracker.updateToolStatus(preview.take(80).ifBlank { "sandbox job" })
         if (!AgentForegroundService.isRunning) {
@@ -32,7 +32,9 @@ object SandboxJobKeepAlive {
 
     fun onEnd(context: Context, sessionId: String) {
         inflight.remove(sessionId)
-        SessionActivityTracker.setInactive("sandbox:$sessionId")
+        SessionActivityTracker.setInactive(
+            SessionActivityTracker.SANDBOX_KEEPALIVE_PREFIX + sessionId,
+        )
         if (inflight.isEmpty()) {
             SessionActivityTracker.updateToolStatus("Idle")
         } else {

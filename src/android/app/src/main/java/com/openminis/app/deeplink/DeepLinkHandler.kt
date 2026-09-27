@@ -132,6 +132,10 @@ object DeepLinkHandler {
                 val sid = segments.firstOrNull()
                 when {
                     sid.isNullOrBlank() -> DeepLinkAction.Unknown
+                    // [T-android-sandbox-keepalive-open] A keep-alive key is
+                    // not a chat — ignore it rather than opening a blank one.
+                    !com.openminis.app.service.SessionActivityTracker.isChatScopedSessionId(sid) ->
+                        DeepLinkAction.Unknown
                     segments.size == 1 -> DeepLinkAction.OpenSession(sid)
                     else -> {
                         val resourcePath = "/" + segments.drop(1).joinToString("/")
