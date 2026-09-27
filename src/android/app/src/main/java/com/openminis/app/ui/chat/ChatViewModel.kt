@@ -480,21 +480,24 @@ class ChatViewModel(
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 return ChatViewModel(
-                    sessionId = sessionId,
+                    sessionId = ChatViewModelStore.resolvePersistedId(sessionId),
                     chatRepository = chatRepository,
                     providerRepository = providerRepository,
                     context = appContext,
                     memoryRepository = memoryRepository,
                     skillRepository = skillRepository,
                     mcpRepository = mcpRepository,
-                ) as T
+                ).also { ChatViewModelStore.register(sessionId, it) } as T
             }
         }
     }
 
     private val mediaStore = com.openminis.app.data.storage.MediaStore(context)
 
-    private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    private val _messages = SnapshotMutableStateFlow<List<ChatMessage>>(
+        emptyList(),
+        ::snapshotChatMessages,
+    )
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
     // ── Long-session window cap ────────────────────────────────────────
@@ -703,7 +706,10 @@ class ChatViewModel(
      * The map is keyed by the assistant message id; absent ⇒ no live
      * stream (turn either hasn't started or has already flushed).
      */
-    private val _streamingById = MutableStateFlow<Map<String, StreamingDelta>>(emptyMap())
+    private val _streamingById = SnapshotMutableStateFlow<Map<String, StreamingDelta>>(
+        emptyMap(),
+        ::snapshotStreamingDeltas,
+    )
     val streamingById: StateFlow<Map<String, StreamingDelta>> = _streamingById.asStateFlow()
 
     /**
@@ -833,6 +839,14 @@ class ChatViewModel(
 
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
+
+    // [T-android-idle-session-budget] Eviction bookkeeping: safe-mode listener
+    // handle, shell-preservation flag and the initial collector jobs captured
+    // at construction, so later work can be told apart from long-lived
+    // collectors when deciding whether a VM may be evicted.
+    private var unsubscribeSafeMode: (() -> Unit)? = null
+    private var preserveShellOnClear = false
+    private var initialScopeJobs: Set<Job> = emptySet()
 
     /**
      * T261: tool detail sheet visibility, persistent across LazyColumn
@@ -3658,6 +3672,11 @@ class ChatViewModel(
 
     init {
         loadSession()
+        // [T-android-idle-session-budget] After each turn settles, re-arm the
+        // idle-cache trim so finished sessions can be reclaimed.
+        viewModelScope.launch {
+            _isStreaming.collect { if (!it) ChatViewModelStore.scheduleTrim() }
+        }
         // [T-session-paused-badge-active-false-positive] Drive the session-list
         // PAUSED badge directly off canResume — the authoritative "this session
         // is interrupted (tap Resume)" flag. This is the single chokepoint over
@@ -3703,7 +3722,7 @@ class ChatViewModel(
         // cold start. loadSession() is idempotent (re-checks isSafeMode
         // on entry; sessionLoaded gate prevents double-population), so
         // this is a clean "now finish the work you skipped" hook.
-        com.openminis.app.crash.CrashFrequencyDetector
+        unsubscribeSafeMode = com.openminis.app.crash.CrashFrequencyDetector
             .registerSafeModeClearedListener {
                 viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     runCatching { loadSession() }
@@ -9302,6 +9321,13 @@ class ChatViewModel(
         return try {
             val args = JSONObject(argsJson)
             var command = args.optString("command", "")
+            val resourceClass = when (args.optString("resource_class", "auto")) {
+                "auto", "" -> if (com.openminis.app.sandbox.SandboxResourceGate.isHeavy(command))
+                    com.openminis.app.sandbox.SandboxResourceGate.ResourceClass.HEAVY
+                    else com.openminis.app.sandbox.SandboxResourceGate.ResourceClass.AUTO
+                "heavy" -> com.openminis.app.sandbox.SandboxResourceGate.ResourceClass.HEAVY
+                else -> return ToolExecutionResult("Error: resource_class must be auto or heavy", false)
+            }
             val timeoutSec = args.optInt("timeout", 900).coerceIn(1, 900)
             val delaySec = args.optInt("delay", 0).coerceAtLeast(0)
             val toolTitle = args.optString("tool_title", "shell_execute")
@@ -9382,34 +9408,40 @@ class ChatViewModel(
                 }
             }
 
-            var result = ExecutionCoordinator.execute(
-                sessionId = dispatchSessionId,
-                command = command,
-                timeout = timeoutSec * 1000L,
-                lineCallback = lc@{ rawLine ->
-                    // Strip any OSC MinisOpenURL markers emitted by
-                    // /usr/local/bin/minis-open and forward the captured
-                    // URLs to the broker so the chat screen can present the
-                    // in-app preview. Lines that were *entirely* a marker
-                    // (nothing visible afterwards) are dropped so the tool
-                    // output doesn't grow blank rows.
-                    val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
-                    for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
-                    if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
-
-                    val idx = toolBlocks.indexOfFirst { it.id == toolId }
-                    if (idx >= 0) {
-                        val current = toolBlocks[idx].content
-                        val updated = if (current.isEmpty()) cleanedLine else "$current\n$cleanedLine"
-                        // Keep last 50 lines for display
-                        val trimmed = updated.lines().takeLast(50).joinToString("\n")
-                        toolBlocks[idx] = toolBlocks[idx].copy(content = trimmed)
-                        viewModelScope.launch(Dispatchers.Main) {
-                            updateAssistantMessage(assistantId, currentText, true, toolBlocks)
-                        }
-                    }
-                },
-            )
+            // [T-android-heavy-task-budget] 50-line/32Ki preview with a single
+            // conflated consumer instead of a Main launch per output line.
+            val preview = ShellOutputPreview(
+                kotlinx.coroutines.CoroutineScope(kotlin.coroutines.coroutineContext + Dispatchers.Main),
+            ) { text ->
+                val idx = toolBlocks.indexOfFirst { it.id == toolId }
+                if (idx >= 0) {
+                    toolBlocks[idx] = toolBlocks[idx].copy(content = text)
+                    updateAssistantMessage(assistantId, currentText, true, toolBlocks)
+                }
+            }
+            var result = try {
+                ExecutionCoordinator.execute(
+                    sessionId = dispatchSessionId,
+                    command = command,
+                    timeout = timeoutSec * 1000L,
+                    resourceClass = resourceClass,
+                    lineCallback = lc@{ rawLine ->
+                        // Strip any OSC MinisOpenURL markers emitted by
+                        // /usr/local/bin/minis-open and forward the captured
+                        // URLs to the broker so the chat screen can present
+                        // the in-app preview. Lines that were *entirely* a
+                        // marker (nothing visible afterwards) are dropped.
+                        val (cleanedLine, capturedUrls) = MinisUrlMarker.extract(rawLine)
+                        for (raw in capturedUrls) MinisOpenUrlBroker.offer(raw)
+                        if (cleanedLine.isEmpty() && rawLine.isNotEmpty()) return@lc
+                        preview.append(cleanedLine)
+                    },
+                ).also {
+                    withContext(Dispatchers.Main) { preview.finish() }
+                }
+            } finally {
+                preview.cancel()
+            }
 
             // [T-bash-on-demand] M5 self-heal: our bash wrapper returns sentinel
             // 119 when bash vanished (user apk del'd) after we cached it
@@ -9426,7 +9458,8 @@ class ChatViewModel(
                 val healed = OnDemandBash.ensureBash(context, executor)
                 command = if (healed is OnDemandBash.Outcome.Available) wrapForBash(bashScript!!) else bashScript!!
                 result = ExecutionCoordinator.execute(
-                    sessionId = dispatchSessionId, command = command, timeout = timeoutSec * 1000L)
+                    sessionId = dispatchSessionId, command = command, timeout = timeoutSec * 1000L,
+                    resourceClass = resourceClass)
             }
 
             // Also scrub markers from the aggregated one-shot output and
@@ -9651,7 +9684,7 @@ class ChatViewModel(
         // clear the side-channel entry so post-turn reads (history rebuild,
         // persist, agent loop) see the canonical truth.
         if (isStreaming) {
-            val toolBlocksImmutable = toolBlocks.toList()
+            val toolBlocksImmutable = snapshotAssistantBlocks(toolBlocks)
 
             // [T-android-stream-flush-dualpath] Dual-path flush at the
             // message-accumulation layer (NOT per-fragment, which never
@@ -9781,7 +9814,7 @@ class ChatViewModel(
         updated[idx] = current[idx].copy(
             content = content,
             isStreaming = false,
-            toolBlocks = toolBlocks.toList(),
+            toolBlocks = snapshotAssistantBlocks(toolBlocks),
             isAwaitingModelResponse = isAwaitingModelResponse,
         )
         _messages.value = updated
@@ -11752,14 +11785,46 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
         }
     }
 
+    init {
+        // Long-lived initial collectors are cancelled on eviction; later jobs
+        // (DB writes, sends, imports, etc.) must finish before a VM is eligible.
+        initialScopeJobs = viewModelScope.coroutineContext[Job]?.children?.toSet().orEmpty()
+    }
+
+    /** Conservative eligibility: unfinished work and in-memory drafts stay pinned. */
+    internal fun canEvictFromMemory(): Boolean =
+        sessionLoaded.value && realSessionId.isNotBlank() && !_isStreaming.value && !_isCompacting.value &&
+            streamJob?.isActive != true && compactJob?.isActive != true &&
+            _inputText.value.isEmpty() && _attachments.value.isEmpty() && _pastedTexts.value.isEmpty() &&
+            _editingMessageId.value == null && _promptQueue.value.isEmpty() && pendingSendText == null &&
+            _browserTabPoolRef?.isAgentBusy != true &&
+            viewModelScope.coroutineContext[Job]?.children?.none { it.isActive && it !in initialScopeJobs } != false
+
+    internal fun preserveShellOnCacheEviction() { preserveShellOnClear = true }
+
+    // A conservative text estimate, not a process PSS measurement. Account
+    // for the separately retained LLM history as well as UI tool output.
+    internal fun retainedTextBytes(): Long = _messages.value.sumOf { message ->
+        message.content.length.toLong() * 4 + message.toolBlocks.sumOf { it.content.length.toLong() * 4 }
+    }
+
+    internal fun trimIdleBrowser() {
+        // Browser-pool idle trimming ships with the browser memory batch; this
+        // hook exists so the idle budget can call it once the pool exposes
+        // `trimIdleTabs()`.
+    }
+
     override fun onCleared() {
+        unsubscribeSafeMode?.invoke()
+        unsubscribeSafeMode = null
         super.onCleared()
-        // Tear down whichever shell was actually serving this VM. Terminate
-        // both ids when the rename happened, since a draft shell may still
-        // linger if the agent ran a tool before `ensureSession()`.
-        ExecutionCoordinator.sessionDidTerminate(activeSessionId)
-        if (activeSessionId != sessionId) {
-            ExecutionCoordinator.sessionDidTerminate(sessionId)
+        // Tear down whichever shell was actually serving this VM — unless the
+        // idle budget deliberately kept it alive for a quick re-open.
+        if (!preserveShellOnClear) {
+            ExecutionCoordinator.sessionDidTerminate(activeSessionId)
+            if (activeSessionId != sessionId) {
+                ExecutionCoordinator.sessionDidTerminate(sessionId)
+            }
         }
     }
 

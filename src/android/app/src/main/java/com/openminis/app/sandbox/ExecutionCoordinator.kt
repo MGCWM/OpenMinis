@@ -73,12 +73,22 @@ object ExecutionCoordinator {
         sessionId: String,
         command: String,
         timeout: Long = 600_000L,
-        lineCallback: ((String) -> Unit)? = null
+        lineCallback: ((String) -> Unit)? = null,
+        resourceClass: SandboxResourceGate.ResourceClass = SandboxResourceGate.ResourceClass.AUTO,
     ): CommandResult {
+        // [T-android-heavy-task-budget] Builds, package managers and other
+        // heavy tools share one process-wide admission budget (checked against
+        // live memory pressure); lightweight commands stay concurrent.
+        return SandboxResourceGate.withCommandLock(
+            command,
+            resourceClass = resourceClass,
+            pressure = { SandboxMemoryPressure.reason(appContext) },
+            onWaiting = { lineCallback?.invoke(it) },
+        ) {
         // ConcurrentHashMap.getOrPut is not atomic, use putIfAbsent pattern
         val mutex = mutexes.getOrPut(sessionId) { Mutex() }
 
-        return mutex.withLock {
+        mutex.withLock {
             val startTime = System.currentTimeMillis()
 
             // Auto-boot PRoot if not already booted
@@ -121,6 +131,7 @@ object ExecutionCoordinator {
             }
 
             CommandResult(output = output, exitCode = exitCode, durationMs = durationMs)
+        }
         }
     }
 

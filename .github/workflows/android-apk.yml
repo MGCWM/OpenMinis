@@ -122,7 +122,7 @@ jobs:
             curl -s -o /dev/null -w '%{http_code}\n' --max-time 20 "$base/$MARKER" || echo unreachable
           done
 
-      - name: Unit tests (thinking / import / backup / window)
+      - name: Unit tests (thinking / import / backup / window / memory)
         working-directory: src/android
         run: |
           ./gradlew testDebugUnitTest --no-daemon \
@@ -130,7 +130,11 @@ jobs:
             --tests 'com.openminis.app.provider.thinking.*' \
             --tests 'com.openminis.app.share.ChatImportParserTest' \
             --tests 'com.openminis.app.backup.BackupZipTest' \
-            --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest'
+            --tests 'com.openminis.app.ui.chat.ChatHistoryWindowTest' \
+            --tests 'com.openminis.app.ui.chat.ChatStateSnapshotsTest' \
+            --tests 'com.openminis.app.sandbox.HeavyTaskAdmissionTest' \
+            --tests 'com.openminis.app.ui.chat.IdleSessionBudgetTest' \
+            --tests 'com.openminis.app.ui.chat.ShellOutputPreviewTest'
 
       - name: assembleRelease
         working-directory: src/android
