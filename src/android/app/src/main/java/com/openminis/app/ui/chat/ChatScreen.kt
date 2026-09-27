@@ -2228,6 +2228,15 @@ fun ChatScreen(
                     "auto-focus skipped: FocusRequester not attached (likely activity recreate / theme switch): ${e.message}",
                 )
             }
+        } else {
+            // [T-android-open-existing-hide-ime] Opening an EXISTING session
+            // must collapse the keyboard: focus / IME state can otherwise
+            // leak in from the previous screen (or be restored on return,
+            // e.g. after the idle-eviction path recreates this pane), which
+            // made the composer pop the keyboard by itself. Mirrors the
+            // 1.36.21 line ("已有会话打开时收起键盘，只有这次流式过才结束聚焦").
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
         }
     }
 
