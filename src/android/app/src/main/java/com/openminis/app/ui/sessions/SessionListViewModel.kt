@@ -1183,7 +1183,7 @@ class SessionListViewModel(
             val title = session.title.orEmpty()
             if (title.lowercase().contains(q)) continue
             val hit = chatRepository.dao.findFirstMessageSnippet(session.id, query, 50, query.length + 100)
-            var foundSnippet: String? = hit?.headText?.replace('\n', ' ').replace('\r', ' ')
+            var foundSnippet: String? = hit?.headText?.replace('\n', ' ')?.replace('\r', ' ')
             if (!foundSnippet.isNullOrBlank()) foundSnippet = "…$foundSnippet…"
             if (foundSnippet != null) out[session.id] = foundSnippet
         }
