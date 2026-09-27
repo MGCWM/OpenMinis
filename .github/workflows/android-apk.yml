@@ -136,7 +136,9 @@ jobs:
             --tests 'com.openminis.app.ui.chat.IdleSessionBudgetTest' \
             --tests 'com.openminis.app.ui.chat.ShellOutputPreviewTest' \
             --tests 'com.openminis.app.data.CompactFallbackPolicyTest' \
-            --tests 'com.openminis.app.data.CompactSplitPredicateTest'
+            --tests 'com.openminis.app.data.CompactSplitPredicateTest' \
+            --tests 'com.openminis.app.sandbox.AdaptiveExecutionGateTest' \
+            --tests 'com.openminis.app.ui.settings.StepperClampTest'
 
       - name: assembleRelease
         working-directory: src/android

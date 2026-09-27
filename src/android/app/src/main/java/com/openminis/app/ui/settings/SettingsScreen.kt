@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -99,6 +100,9 @@ fun SettingsScreen(
     // T235: Shared Folders entry (Shared / Skills / Memory). Default no-op
     // for back-compat with callers wired before T235.
     onSharedFoldersClick: () -> Unit = {},
+    // [T-android-tool-limits] Execution caps page (shell timeout, file_read
+    // caps, sub-agent turns). Default no-op for un-wired callers.
+    onToolLimitsClick: () -> Unit = {},
     // T50: Background & Notifications screen (battery optimisation +
     // OEM autostart guidance). Default no-op so older callers/tests
     // don't need to be retrofitted.
@@ -206,6 +210,13 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_mcp),
                     subtitle = stringResource(R.string.settings_mcp_subtitle),
                     onClick = onMcpClick,
+                )
+                SettingsItem(
+                    icon = Icons.Outlined.Tune,
+                    iconColor = Color(0xFF8E8E93),
+                    title = stringResource(R.string.tool_limits_title),
+                    subtitle = stringResource(R.string.settings_tool_limits_subtitle),
+                    onClick = onToolLimitsClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.Terminal,

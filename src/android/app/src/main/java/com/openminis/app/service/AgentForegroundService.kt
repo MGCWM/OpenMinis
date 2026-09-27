@@ -51,6 +51,12 @@ class AgentForegroundService : Service() {
         private val processStartElapsedMs = android.os.SystemClock.elapsedRealtime()
 
         private const val TAG = "AgentForegroundService"
+
+        // [T-android-fgs-single-publisher] Set while a service instance is
+        // foregrounded; SandboxJobKeepAlive and the tracker consult it before
+        // re-starting the service.
+        @Volatile
+        var isRunning: Boolean = false
         private const val CHANNEL_ID = "agent_status"
         private const val CHANNEL_NAME = "Agent Status"
         private const val NOTIFICATION_ID = 9001
@@ -84,6 +90,24 @@ class AgentForegroundService : Service() {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
+            }
+        }
+
+        /**
+         * [T-android-fgs-single-publisher] Start/refresh without carrying a
+         * status snapshot: the tracker is the source of truth, and a second
+         * snapshot in start intents caused stale/duplicate foreground posts.
+         */
+        fun startService(context: Context) {
+            val intent = Intent(context, AgentForegroundService::class.java)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "startForegroundService failed: ${t.message}")
             }
         }
 
@@ -145,6 +169,7 @@ class AgentForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        isRunning = true
         // Safe-mode bail-out. When CrashFrequencyDetector tripped in
         // MinisApp.onCreate, the Application skipped its lateinit init
         // for repositories — but a sticky FG service that was running
@@ -237,10 +262,17 @@ class AgentForegroundService : Service() {
             return START_NOT_STICKY
         }
 
+        val hasStatusExtras = intent?.hasExtra(EXTRA_SESSION_COUNT) == true
         val sessionCount = intent?.getIntExtra(EXTRA_SESSION_COUNT, 0) ?: 0
         val toolStatus = intent?.getStringExtra(EXTRA_TOOL_STATUS) ?: "Idle"
 
-        if (!promoteToForeground(sessionCount, toolStatus)) {
+        // No-extras starts (SandboxJobKeepAlive / scheduled tasks) fall back to
+        // the tracker, which is the source of truth for the visible state.
+        if (!promoteToForeground(
+                if (hasStatusExtras) sessionCount else null,
+                if (hasStatusExtras) toolStatus else null,
+            )
+        ) {
             Log.w(TAG, "startForeground failed")
             stopSelf()
             return START_NOT_STICKY
@@ -365,6 +397,7 @@ class AgentForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        isRunning = false
         releaseWakeLock()
         try {
             overlayController?.hide()

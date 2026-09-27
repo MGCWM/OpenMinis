@@ -232,6 +232,33 @@
     <string name="model_groups_vision">Vision Input</string>
     <string name="model_groups_compact_fallback">Compact fallback</string>
     <string name="model_groups_compact_fallback_footer">Current model is tried once. If that fails, the fallback is tried once. With no fallback, the current model is retried once. Two failures truncate older context.</string>
+    <!-- [T-android-tool-limits] Execution caps page. -->
+    <string name="settings_tool_limits_subtitle">Shell timeout, file_read caps, sub-agent turns</string>
+    <string name="tool_limits_title">Tool limits</string>
+    <string name="tool_limits_header">Caps</string>
+    <string name="tool_limits_footer">These caps apply to the next tool call. Shell timeout is both the default and the maximum the agent may request. file_read still has an 80 KB hard cap to protect the UI.</string>
+    <string name="tool_limits_shell">Shell timeout</string>
+    <string name="tool_limits_shell_value">%1$d s</string>
+    <string name="tool_limits_file_chars">file_read character cap</string>
+    <string name="tool_limits_file_lines">file_read line cap</string>
+    <string name="tool_limits_file_lines_unlimited">Unlimited</string>
+    <string name="tool_limits_subagent">Sub-agent max turns</string>
+    <string name="tool_limits_decrease">Decrease</string>
+    <string name="tool_limits_increase">Increase</string>
+    <string name="execution_resources">Execution resources</string>
+    <string name="execution_resources_help">Applies to heavy sandbox calls across all chats. Light tools and model requests continue. Running tasks are never paused or killed. Waiting does not consume execution time; zero queue timeout means wait until resources recover or you cancel. No per-task memory cap is imposed.</string>
+    <string name="execution_auto">Automatically adjust concurrency</string>
+    <string name="execution_heavy">Heavy task concurrency limit</string>
+    <string name="execution_queue">Advanced execution settings</string>
+    <string name="execution_queue_timeout">Queue timeout (separate from execution)</string>
+    <string name="execution_idle_count">Idle shells to retain</string>
+    <string name="execution_idle_minutes">Idle shell timeout</string>
+    <string name="execution_minutes_value">%1$d min</string>
+    <string name="execution_idle_help">Only shells confirmed idle are reclaimed. Background processes are protected; uncertain process state prevents automatic reclamation. Shell-local variables and working directory reset after reclamation.</string>
+    <string name="settings_multi_agent_enter_value">Enter value</string>
+    <string name="settings_multi_agent_value_range">Range %1$d – %2$d</string>
+    <string name="settings_multi_agent_confirm">OK</string>
+    <string name="settings_multi_agent_cancel">Cancel</string>
     <!-- [T-mcp-env-var-picker-android] Insert a reference to an App env var as $$VAR -->
     <string name="mcp_form_env_insert_app_var">Insert app var</string>
     <!-- [T-mcp-env-var-delete-confirm-android] Clear-all env vars affordance + confirm -->

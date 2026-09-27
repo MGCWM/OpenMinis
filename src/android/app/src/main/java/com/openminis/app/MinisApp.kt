@@ -480,6 +480,11 @@ class MinisApp : Application(), ImageLoaderFactory {
         ExecutionCoordinator.init(this)
         ExecutionCoordinator.envVarRepository = envVarRepository
 
+        // [T-android-tool-limits] Prime the execution-caps prefs store so tool
+        // calls (shell timeout, file_read caps) and the sandbox gate can read
+        // values before any Activity exists.
+        com.openminis.app.data.ToolLimitPrefs.prime(this)
+
         // Privacy Mode store + redactor wiring. Mirrors iOS
         // EnvVarPrivacyStore.init / EnvVarRedactor static handoff.
         com.openminis.app.data.EnvVarPrivacyStore.init(this)

@@ -121,6 +121,9 @@ object Routes {
     const val RESTORE_SERVERS = "restore_servers"
     const val SESSION_STORAGE_DETAIL = "session_storage/{sessionId}"
     const val ROOTFS_MANAGEMENT = "rootfs_management"
+    // [T-android-tool-limits] Execution caps (shell timeout, file_read caps,
+    // idle shells, concurrency).
+    const val TOOL_LIMITS = "tool_limits"
     const val MIRROR_CATEGORY_DETAIL = "mirror_category/{categoryKey}"
     fun mirrorCategoryDetail(categoryKey: String) = "mirror_category/$categoryKey"
     const val FILE_BROWSER = "file_browser"
@@ -603,6 +606,7 @@ fun AppNavigation(
                 onAboutClick = { navController.safeNavigate(Routes.ABOUT) },
                 onMountedFoldersClick = { navController.safeNavigate(Routes.MOUNTED_FOLDERS) },
                 onSharedFoldersClick = { navController.safeNavigate(Routes.SHARED_FOLDERS) },
+                onToolLimitsClick = { navController.safeNavigate(Routes.TOOL_LIMITS) },
             )
         }
 
@@ -1043,6 +1047,12 @@ fun AppNavigation(
                     )
                     navController.safeNavigate(Routes.FILE_BROWSER)
                 },
+            )
+        }
+
+        composable(Routes.TOOL_LIMITS) {
+            com.openminis.app.ui.settings.ToolLimitsSettingsScreen(
+                onBack = { navController.safePopBackStack() },
             )
         }
 
