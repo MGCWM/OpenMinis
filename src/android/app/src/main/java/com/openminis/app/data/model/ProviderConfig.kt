@@ -410,6 +410,9 @@ data class ProviderConfig(
     // voiceInputGroupId (meta KV row, not synced CRDT member maps). Absent in
     // old persisted JSON → deserializes to null (ignoreUnknownKeys + default).
     var visionGroupId: String? = null,
+    // Compact fallback: used only after the current session model fails to
+    // compact. Same slot shape as visionGroupId (group id or entry:<id>).
+    var compactFallbackGroupId: String? = null,
     // Models and groups exposed to the agent loop (minis-model-use terminal
     // command) — mirrors iOS agentLoopModelEntryIds / agentLoopGroupIds.
     val agentLoopModelEntryIds: MutableList<String> = mutableListOf(),
