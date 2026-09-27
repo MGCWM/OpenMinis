@@ -429,6 +429,27 @@ fun ChatSplitScaffold(
             ?.takeIf { it.pane == ListDetailPaneScaffoldRole.Detail }
             ?.contentKey
 
+        // [T-android-ime-on-open] The M3 scaffold moves focus into the pane
+        // that just became current (its own LaunchedEffect on
+        // `currentDestination`), which on a touch phone lands on the chat
+        // composer and pops the IME the moment a chat opens — the field bug
+        // traced via an on-device probe build to exactly this library effect.
+        // A destination change must never carry keyboard focus on a
+        // touch-first device, so re-clear right after the library's focus
+        // lands, and once more for slow frames. Draft sessions keep their
+        // intentional auto-focus.
+        val paneFocusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val paneKeyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        androidx.compose.runtime.LaunchedEffect(currentSessionId) {
+            if (isDraftSessionId(currentSessionId)) return@LaunchedEffect
+            kotlinx.coroutines.delay(80)
+            paneFocusManager.clearFocus(force = true)
+            paneKeyboard?.hide()
+            kotlinx.coroutines.delay(220)
+            paneFocusManager.clearFocus(force = true)
+            paneKeyboard?.hide()
+        }
+
         // [T-android-new-chat-shortcut] Open a fresh draft in the detail pane.
         // Hoisted out of the detailPane call below so the keyboard shortcut and
         // the "New Chat" menu item cannot drift into doing different things.
