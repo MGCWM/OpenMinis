@@ -25,7 +25,13 @@ enum class BrowserAction(val value: String) {
     GET_COOKIES("get_cookies"),
     SET_COOKIES("set_cookies"),
     SCROLL_AND_COLLECT("scroll_and_collect"),
-    WAIT_FOR_DOM_STABLE("wait_for_dom_stable");
+    WAIT_FOR_DOM_STABLE("wait_for_dom_stable"),
+    // [T-android-browser-observability] Agent-facing extensions:
+    // feed a parked <input type=file> picker, read the page's console
+    // trail, and read the recent-requests trail.
+    UPLOAD_FILE("upload_file"),
+    GET_CONSOLE_LOGS("get_console_logs"),
+    GET_NETWORK_LOG("get_network_log");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action

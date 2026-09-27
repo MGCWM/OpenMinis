@@ -43,6 +43,16 @@ data class BrowserActionInput(
      * (Unix seconds). Values are loosely typed (String / Boolean / Number).
      */
     val cookies: List<Map<String, Any?>>? = null,
+    /**
+     * [T-android-browser-observability] Files to feed a page's pending
+     * `<input type=file>` picker (upload_file). Guest paths under
+     * `/var/minis/workspace|attachments|shared/…`, or workspace-relative.
+     */
+    val files: List<String>? = null,
+    /** Console-log level filter for get_console_logs (log/info/warn/error/debug/all). */
+    val logLevel: String? = null,
+    /** URL-substring filter for get_network_log. */
+    val filter: String? = null,
 ) {
     companion object {
         fun parse(json: String): BrowserActionInput? {
@@ -77,6 +87,9 @@ data class BrowserActionInput(
                     timeoutMs = if (obj.has("timeout")) obj.optInt("timeout") else null,
                     fullPage = obj.optBoolean("full_page", false),
                     cookies = parseCookies(obj),
+                    files = parseFiles(obj),
+                    logLevel = obj.optString("log_level").ifEmpty { null },
+                    filter = obj.optString("filter").ifEmpty { null },
                 )
             } catch (_: Exception) {
                 null
@@ -90,6 +103,21 @@ data class BrowserActionInput(
          * emits the string form) isn't silently dropped to empty. Returns null
          * when absent / unparseable / empty.
          */
+        /**
+         * `files` may arrive as a real JSON array or — because the tool schema
+         * types it as a string — as a JSON-encoded string. Accept both, same
+         * as [parseCookies].
+         */
+        private fun parseFiles(obj: JSONObject): List<String>? {
+            val arr = obj.optJSONArray("files")
+                ?: obj.optString("files").takeIf { it.isNotBlank() }
+                    ?.let { runCatching { JSONArray(it) }.getOrNull() }
+            arr ?: return null
+            return (0 until arr.length())
+                .mapNotNull { i -> arr.optString(i).takeIf { it.isNotBlank() } }
+                .takeIf { it.isNotEmpty() }
+        }
+
         private fun parseCookies(obj: JSONObject): List<Map<String, Any?>>? {
             val arr: JSONArray? = obj.optJSONArray("cookies")
                 ?: obj.optString("cookies").takeIf { it.isNotBlank() }
