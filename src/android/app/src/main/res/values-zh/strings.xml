@@ -1318,6 +1318,10 @@
     <string name="backup_category_mcp">MCP 服务器</string>
     <string name="backup_category_env_vars">环境变量</string>
     <string name="backup_category_voice">语音校正</string>
+    <string name="backup_category_rootfs">Ubuntu 根文件系统</string>
+    <string name="backup_category_cache">应用缓存</string>
+    <string name="backup_include_credentials">包含凭据</string>
+    <string name="backup_include_credentials_subtitle">API 密钥、OAuth 令牌、环境变量值、MCP 授权头。需要加密。</string>
     <string name="backup_max_file_size">单文件大小上限</string>
     <string name="backup_max_file_no_files">不备份文件</string>
     <string name="backup_max_file_unlimited">不限制</string>
