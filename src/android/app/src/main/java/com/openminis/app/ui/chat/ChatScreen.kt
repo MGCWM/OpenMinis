@@ -2217,7 +2217,9 @@ fun ChatScreen(
     // `LaunchedEffect(Unit)` would fire for the first draft of the screen's
     // life and never again, leaving every subsequent New Chat unfocused.
     LaunchedEffect(sessionId) {
+        imeDbg(context, "LE-enter sid=" + sessionId + " draft=" + sessionId.startsWith("__new__"))
         if (sessionId.startsWith("__new__")) {
+            imeDbg(context, "draft-delay-300")
             // Small delay to let the layout settle before requesting focus
             kotlinx.coroutines.delay(300)
             try {
@@ -2229,6 +2231,7 @@ fun ChatScreen(
                 )
             }
         } else {
+            imeDbg(context, "else-branch: clearFocus+hide")
             // [T-android-open-existing-hide-ime] Opening an EXISTING session
             // must collapse the keyboard: focus / IME state can otherwise
             // leak in from the previous screen (or be restored on return,
@@ -3695,6 +3698,7 @@ fun ChatScreen(
                         registry = messageBounds,
                         onAddToInput = { snippet ->
                             viewModel.appendToInputText(snippet)
+                            imeDbg(context, "rf@markdown-toolbar")
                             try {
                                 inputFocusRequester.requestFocus()
                             } catch (_: IllegalStateException) {
@@ -4067,6 +4071,7 @@ fun ChatScreen(
                                         coroutineScope.launch {
                                             tracedScrollToItem("EDIT-MSG", 0, 0)
                                         }
+                                        imeDbg(context, "rf@edit-message")
                                         inputFocusRequester.requestFocus()
                                     }
                                 }),
@@ -4343,6 +4348,7 @@ fun ChatScreen(
                         },
                         onAddToInput = { snippet ->
                             viewModel.appendToInputText(snippet)
+                            imeDbg(context, "rf@selection-toolbar")
                             try { inputFocusRequester.requestFocus() } catch (_: IllegalStateException) {}
                             keyboardController?.show()
                         },
@@ -4843,6 +4849,7 @@ fun ChatScreen(
                                                     // without an extra tap on
                                                     // the composer.
                                                     if (cmd.isSkill) {
+                                                        imeDbg(context, "rf@skill")
                                                         try {
                                                             inputFocusRequester.requestFocus()
                                                         } catch (_: IllegalStateException) {
@@ -5209,6 +5216,7 @@ fun ChatScreen(
                                 }
                                 sendSwipeProgress = 0f
                             } else if (swipedUp && !hasText && !inputFocused) {
+                                imeDbg(context, "rf@swipe-empty")
                                 // Empty input + collapsed keyboard -> bring
                                 // up the keyboard. If the keyboard is
                                 // already open, do nothing so a stray drag
@@ -5822,6 +5830,7 @@ fun ChatScreen(
                                     // those would swap the hint while the user
                                     // is typing or dismissing the keyboard.
                                     if (it.isFocused && !inputFocused) {
+                                        imeDbg(context, "composer-GAIN\n" + android.util.Log.getStackTraceString(Exception()).take(2400))
                                         placeholderIndex = ComposerPlaceholderRotation.nextIndex(
                                             current = placeholderIndex,
                                             hasFocusedBefore = composerHasFocusedBefore,
@@ -5831,6 +5840,7 @@ fun ChatScreen(
                                         )
                                         composerHasFocusedBefore = true
                                     }
+                                    if (!it.isFocused && inputFocused) imeDbg(context, "composer-LOSS")
                                     inputFocused = it.isFocused
                                 }
                                 .onKeyEvent { event ->
@@ -7245,3 +7255,13 @@ private fun ThinkingLevelSheet(
 }
 
 
+
+
+/** [IMEDBG] TEMPORARY keyboard-focus diagnostics; remove after the investigation. */
+private fun imeDbg(context: android.content.Context, msg: String) {
+    runCatching {
+        val dir = java.io.File(context.filesDir, "minis-global/shared")
+        dir.mkdirs()
+        java.io.File(dir, "ime-dbg.log").appendText(System.currentTimeMillis().toString() + " " + msg + "\n")
+    }
+}
