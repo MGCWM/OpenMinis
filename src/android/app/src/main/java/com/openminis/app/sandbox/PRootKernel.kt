@@ -126,6 +126,11 @@ object PRootKernel {
         // updated profile scripts and URL-interception wrappers ship with
         // each app update. Mirrors iOS RootfsManager.applyDefaultMountOverlay.
         rootfsManager.applyDefaultMountOverlay()
+        // Align guest /etc/localtime + /etc/timezone with the device zone on
+        // every boot — not only on ACTION_TIMEZONE_CHANGED. Without this a
+        // freshly installed guest keeps Etc/UTC until the user next changes
+        // zones (same ordering as the 1.36.23 line).
+        rootfsManager.applyHostTimezone()
 
         // Re-apply user mirror selections — the overlay above ships stock
         // config files (pip.conf, .npmrc, repositories) and would otherwise
