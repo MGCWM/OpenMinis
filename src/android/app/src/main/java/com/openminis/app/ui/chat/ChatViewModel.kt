@@ -3377,7 +3377,7 @@ class ChatViewModel(
     ) {
         fun maxOutFor(userMessage: String): Int {
             val estimatedInput = userMessage.length / 4
-            return maxOf(1024, minOf(8192, (model.contextWindow.takeIf { it > 0 } ?: 128_000) - estimatedInput))
+            return maxOf(1024, minOf(8192, (model.contextWindow?.takeIf { it > 0 } ?: 128_000) - estimatedInput))
         }
     }
 

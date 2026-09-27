@@ -1234,6 +1234,8 @@
     <string name="model_groups_group_name">Group name</string>
     <string name="model_groups_create">Create</string>
     <string name="model_groups_none">None</string>
+    <string name="model_groups_slot_groups">Groups</string>
+    <string name="model_groups_slot_models">Models</string>
     <string name="add_models_to_group_search_models">Search models</string>
     <string name="add_models_to_group_clear">Clear</string>
     <string name="settings_agent_loop_models">Agent Loop Models</string>    <string name="agent_loop_models_groups">Groups</string>
