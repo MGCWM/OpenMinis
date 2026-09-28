@@ -12,7 +12,7 @@ object BrowserUseTool {
 
     const val NAME = "browser_use"
 
-    val description = """Control web browser with up to 3 tabs. Actions: navigate to URL, take screenshot, click elements, type text, get page text, scroll, get page info, execute JavaScript, find elements by selector, hover, get readable content, set user agent, get page backbone (DOM structure), fetch resource, manage tabs (new_tab, close_tab, list_tabs).""".trimIndent()
+    val description = """Control web browser with up to 5 tabs. Actions: navigate to URL, take screenshot, click elements, type text, get page text, scroll, get page info, execute JavaScript, find elements by selector, hover, get readable content, set user agent, get page backbone (DOM structure), fetch resource, manage tabs (new_tab, close_tab, list_tabs).""".trimIndent()
 
     /**
      * Build the JSON tool definition for the Anthropic / OpenAI / Gemini API.

@@ -35,7 +35,7 @@ class BrowserTabPool(private val context: Context) {
 
     companion object {
         private const val TAG = "BrowserTabPool"
-        private const val MAX_TABS = 3
+        private const val MAX_TABS = 5
         private const val MAX_GLOBAL_TABS = 6
         // Access only on Main. Weak keys do not become an additional pool owner.
         private val pools = java.util.WeakHashMap<BrowserTabPool, Unit>()

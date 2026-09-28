@@ -48,6 +48,20 @@ class BrowserActionInputTest {
     }
 
     @Test
+    fun `pinch amount and export_pdf parse`() {
+        val p = BrowserActionInput.parse(
+            """{"action":"gesture","gesture":"pinch","selector":"#map","amount":-150}"""
+        )!!
+        assertEquals("pinch", p.gesture)
+        assertEquals(-150, p.amount)
+
+        assertEquals(
+            BrowserAction.EXPORT_PDF,
+            BrowserActionInput.parse("""{"action":"export_pdf"}""")?.action,
+        )
+    }
+
+    @Test
     fun `new actions resolve by name`() {
         assertEquals(
             BrowserAction.UPLOAD_FILE,
