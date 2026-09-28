@@ -7,6 +7,115 @@ package com.openminis.app.browser
  */
 object BrowserUseJS {
 
+    /**
+     * [T-android-browser-observability-v2] Installed at document start (or on
+     * page start as a fallback): wraps fetch + XMLHttpRequest to record
+     * RESPONSE bodies into `window.__minis_net__` (bounded ring), and forwards
+     * uncaught errors / rejections into the page console so the native
+     * console capture sees them too. Idempotent — safe to inject twice.
+     */
+    val EARLY_NET_INSTRUMENTATION_JS: String = """
+        (function(){
+          if (window.__minis_net__) return;
+          var ring = []; window.__minis_net__ = ring;
+          function push(e) { ring.push(e); if (ring.length > 200) ring.shift(); }
+          function preview(s) {
+            try {
+              if (s == null) return '';
+              s = String(s);
+              return s.length > 2000 ? s.slice(0, 2000) + '...' : s;
+            } catch (_) { return ''; }
+          }
+          try {
+            var of = window.fetch;
+            if (of) {
+              window.fetch = function() {
+                var args = arguments; var url = ''; var method = 'GET';
+                try {
+                  url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url) || '';
+                  method = ((args[1] && args[1].method) || 'GET').toUpperCase();
+                } catch (_) {}
+                var t0 = Date.now();
+                return of.apply(this, args).then(function(resp) {
+                  try {
+                    var c = resp.clone();
+                    c.text().then(function(b) {
+                      push({t:'fetch', m:method, u:String(url), s:resp.status, ms:Date.now()-t0, b:preview(b)});
+                    }).catch(function() {});
+                  } catch (_) {}
+                  return resp;
+                }, function(err) {
+                  push({t:'fetch', m:method, u:String(url), s:0, ms:Date.now()-t0, b:'ERROR: ' + err});
+                  throw err;
+                });
+              };
+            }
+          } catch (_) {}
+          try {
+            var oo = XMLHttpRequest.prototype.open;
+            var os = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(m, u) {
+              this.__minis = { m: (m || 'GET').toUpperCase(), u: String(u) };
+              return oo.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function() {
+              var x = this; var st = Date.now();
+              x.addEventListener('loadend', function() {
+                try {
+                  push({t:'xhr', m:(x.__minis && x.__minis.m) || 'GET', u:(x.__minis && x.__minis.u) || '', s:x.status, ms:Date.now()-st, b:preview(x.responseText)});
+                } catch (_) {}
+              });
+              return os.apply(this, arguments);
+            };
+          } catch (_) {}
+          try {
+            window.addEventListener('error', function(ev) {
+              try { console.error('MINIS-UNCAUGHT', (ev && ev.message) || '', (ev && ev.filename) || '', (ev && ev.lineno) || 0); } catch (_) {}
+            });
+            window.addEventListener('unhandledrejection', function(ev) {
+              try { console.error('MINIS-REJECTION', String((ev && ev.reason) || '')); } catch (_) {}
+            });
+          } catch (_) {}
+        })();
+    """.trimIndent()
+
+    /** One synchronous poll for [waitFor] — returns JSON `{ok, matched, tag}`. */
+    fun waitProbe(selector: String, text: String?): String = """
+        (function(){
+          var el = document.querySelector(${JSONObject.quote(selector)});
+          var bodyText = document.body ? (document.body.innerText || '') : '';
+          var t = ${if (text == null) "null" else JSONObject.quote(text)};
+          if (el) {
+            if (t === null) return JSON.stringify({ok:true, matched:'selector', tag:el.tagName, text:(el.innerText||el.value||'').slice(0,140)});
+            if ((el.innerText||'').indexOf(t) >= 0 || bodyText.indexOf(t) >= 0) {
+              return JSON.stringify({ok:true, matched:'selector+text', tag:el.tagName});
+            }
+          }
+          if (t !== null && bodyText.indexOf(t) >= 0) return JSON.stringify({ok:true, matched:'text'});
+          return JSON.stringify({ok:false});
+        })()
+    """.trimIndent()
+
+    /** Set a `<select>` by option label or value, dispatching change+input. */
+    fun selectOption(selector: String, want: String): String = """
+        (function(){
+          var el = document.querySelector(${JSONObject.quote(selector)});
+          if (!el) return JSON.stringify({error:'selector not found'});
+          if (el.tagName !== 'SELECT') return JSON.stringify({error:'not a <select>: ' + el.tagName});
+          var want = ${JSONObject.quote(want)};
+          var hit = null;
+          for (var i = 0; i < el.options.length; i++) {
+            var o = el.options[i];
+            if (o.value === want || (o.text && o.text.trim() === want) || (o.text && o.text.indexOf(want) >= 0)) { hit = o; break; }
+          }
+          if (!hit) return JSON.stringify({error:'option not found: ' + want});
+          el.value = hit.value;
+          el.dispatchEvent(new Event('change', {bubbles:true}));
+          el.dispatchEvent(new Event('input', {bubbles:true}));
+          return JSON.stringify({selected: hit.text, value: hit.value});
+        })()
+    """.trimIndent()
+
     /** Safely escape a string for embedding in JavaScript source (single-quoted). */
     fun jsQuote(s: String): String = buildString {
         for (ch in s) {
@@ -466,3 +575,4 @@ object BrowserUseJS {
         """.trimIndent()
     }
 }
+import org.json.JSONObject

@@ -31,7 +31,16 @@ enum class BrowserAction(val value: String) {
     // trail, and read the recent-requests trail.
     UPLOAD_FILE("upload_file"),
     GET_CONSOLE_LOGS("get_console_logs"),
-    GET_NETWORK_LOG("get_network_log");
+    GET_NETWORK_LOG("get_network_log"),
+    // [T-android-browser-observability-v2] Navigation control, dropdowns,
+    // condition waits, and captured fetch/XHR response bodies.
+    GO_BACK("go_back"),
+    GO_FORWARD("go_forward"),
+    RELOAD("reload"),
+    SELECT_OPTION("select_option"),
+    WAIT_FOR("wait_for"),
+    GET_RESPONSE_LOG("get_response_log"),
+    CLEAR_SITE_DATA("clear_site_data");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action
