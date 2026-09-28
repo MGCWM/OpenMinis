@@ -1493,7 +1493,9 @@ class BrowserUseManager(
         if (selector == null && text == null) {
             return BrowserActionResult.error("wait_for requires 'selector' and/or 'text'")
         }
-        val timeout = (timeoutMs?.takeIf { it > 0 }?.toLong() ?: 10_000L).coerceAtMost(120_000L)
+        // The tool contract passes 'timeout' in SECONDS (like wait_for_dom_stable).
+        val timeoutSec = (timeoutMs?.takeIf { it > 0 } ?: 10).coerceAtMost(120)
+        val timeout = timeoutSec * 1000L
         val started = System.currentTimeMillis()
         val deadline = started + timeout
         val sel = selector ?: "html"
@@ -1512,7 +1514,7 @@ class BrowserUseManager(
             kotlinx.coroutines.delay(250)
         }
         return BrowserActionResult.error(
-            "Timed out after " + (timeout / 1000) + "s waiting for " +
+            "Timed out after " + timeoutSec + "s waiting for " +
                 (selector ?: "") + (if (text != null) " text=" + JSONObject.quote(text) else ""),
         )
     }
