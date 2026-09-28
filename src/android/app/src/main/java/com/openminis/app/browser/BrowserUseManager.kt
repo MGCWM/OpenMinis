@@ -52,9 +52,12 @@ class BrowserUseManager(
         private const val NAVIGATION_TIMEOUT_MS = 30_000L
         private const val SCREENSHOT_QUALITY = 80        // Explicit screenshot action (iOS: 0.8)
         private const val SNAPSHOT_QUALITY = 70          // Auto-snapshot after visual-change actions (iOS: 0.7)
-        // [T-android-browser-observability] Bounded trails + file-picker wait.
+        // [T-android-browser-observability] Bounded trails + upload caps.
         private const val MAX_LOG_ENTRIES = 200
         private const val UPLOAD_WAIT_MS = 10_000L
+        // Direct File injection moves bytes through a JS string; keep it bounded.
+        private const val MAX_UPLOAD_BYTES = 4L * 1024 * 1024
+        private const val MAX_UPLOAD_TOTAL_BYTES = 8L * 1024 * 1024
         private const val DEFAULT_DOM_STABLE_TIMEOUT_MS = 5_000
 
         /**
@@ -189,16 +192,17 @@ class BrowserUseManager(
             .takeLast(limit.coerceIn(1, MAX_LOG_ENTRIES))
     }
 
+    private data class UploadFile(val name: String, val file: File)
+
     /**
      * Resolve the agent's `/var/minis/…` paths (or workspace-relative paths)
-     * to content URIs the WebView can read. The per-session workspace and
-     * attachments live under `minis-sessions/<sid>/`, shared under
-     * `minis-global/shared` — all already declared for our FileProvider.
+     * to host files. The per-session workspace and attachments live under
+     * `minis-sessions/<sid>/`, shared under `minis-global/shared`.
      */
-    private fun resolveUploadUris(paths: List<String>): Pair<List<android.net.Uri>, List<String>> {
-        val ctx = appContext ?: return emptyList<android.net.Uri>() to paths
+    private fun resolveUploadFiles(paths: List<String>): Pair<List<UploadFile>, List<String>> {
+        val ctx = appContext ?: return emptyList<UploadFile>() to paths
         val sid = sessionIdProvider()
-        val resolved = mutableListOf<android.net.Uri>()
+        val files = mutableListOf<UploadFile>()
         val missing = mutableListOf<String>()
         fun sessionDir(kind: String): File? =
             sid?.let { File(File(File(ctx.filesDir, "minis-sessions"), it), kind) }
@@ -219,41 +223,120 @@ class BrowserUseManager(
                 missing.add(raw)
                 continue
             }
-            runCatching {
-                androidx.core.content.FileProvider.getUriForFile(
-                    ctx, "${ctx.packageName}.fileprovider", file,
-                )
-            }.onSuccess { resolved.add(it) }.onFailure { missing.add(raw) }
+            files.add(UploadFile(name = file.name, file = file))
         }
-        return resolved to missing
+        return files to missing
     }
 
     /**
-     * Deliver files to the parked picker (waits up to [UPLOAD_WAIT_MS] for the
-     * page to open one). An empty result set cancels the picker.
+     * [T-android-browser-upload] Deliver files to a file input.
+     *
+     * Two paths, because WebView only opens the NATIVE picker on a genuine
+     * user gesture — an agent's script-style click never counts:
+     *   1. a picker is already parked (the user, or a real gesture, opened it)
+     *      -> answer it with FileProvider content URIs;
+     *   2. otherwise -> inject real `File` objects into the input via
+     *      `DataTransfer` + dispatch `change`. Chromium supports assigning
+     *      `input.files`, so this works without any gesture at all.
+     *
+     * [selector] targets the input (default `input[type=file]`).
      */
-    suspend fun deliverUpload(paths: List<String>): BrowserActionResult {
+    suspend fun deliverUpload(paths: List<String>, selector: String?): BrowserActionResult {
         if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
-        val (uris, missing) = resolveUploadUris(paths)
-        if (uris.isEmpty()) {
+        val (files, missing) = resolveUploadFiles(paths)
+        if (files.isEmpty()) {
             return BrowserActionResult.error(
                 "No readable files to upload: ${missing.joinToString(", ")}",
             )
         }
-        var waited = 0L
-        while (pendingFileChooser == null && waited < UPLOAD_WAIT_MS) {
-            kotlinx.coroutines.delay(150)
-            waited += 150
-            if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
-        }
-        val cb = pendingFileChooser
-            ?: return BrowserActionResult.error(
-                "The page has not opened a file picker. Click the upload control first, then call upload_file within 10 s.",
-            )
-        pendingFileChooser = null
-        withContext(Dispatchers.Main) { cb.onReceiveValue(uris.toTypedArray()) }
         val note = if (missing.isEmpty()) "" else " (could not read: ${missing.joinToString(", ")})"
-        return BrowserActionResult(text = "Delivered ${uris.size} file(s) to the page's file picker$note")
+
+        // 1) Native picker already parked -> hand it real content URIs.
+        val cb = pendingFileChooser
+        if (cb != null) {
+            val ctx = appContext
+                ?: return BrowserActionResult.error("No app context for upload")
+            val uris = files.mapNotNull { f ->
+                runCatching {
+                    androidx.core.content.FileProvider.getUriForFile(
+                        ctx, "${ctx.packageName}.fileprovider", f.file,
+                    )
+                }.getOrNull()
+            }
+            if (uris.isEmpty()) return BrowserActionResult.error("Could not build content URIs$note")
+            pendingFileChooser = null
+            withContext(Dispatchers.Main) { cb.onReceiveValue(uris.toTypedArray()) }
+            return BrowserActionResult(text = "Delivered ${uris.size} file(s) to the page's file picker$note")
+        }
+
+        // 2) No picker -> inject File objects straight into the input.
+        val sel = selector?.takeIf { it.isNotBlank() } ?: "input[type=file]"
+        val oversize = files.firstOrNull { it.file.length() > MAX_UPLOAD_BYTES }
+        if (oversize != null) {
+            return BrowserActionResult.error(
+                "File too large for direct injection: ${oversize.name} " +
+                    "(${oversize.file.length() / 1024 / 1024} MB, limit ${MAX_UPLOAD_BYTES / 1024 / 1024} MB)",
+            )
+        }
+        val total = files.sumOf { it.file.length() }
+        if (total > MAX_UPLOAD_TOTAL_BYTES) {
+            return BrowserActionResult.error(
+                "Files too large for direct injection (${total / 1024 / 1024} MB, limit " +
+                    "${MAX_UPLOAD_TOTAL_BYTES / 1024 / 1024} MB total)",
+            )
+        }
+        val entries = withContext(Dispatchers.IO) {
+            files.map { f ->
+                val b64 = android.util.Base64.encodeToString(
+                    f.file.readBytes(), android.util.Base64.NO_WRAP,
+                )
+                Triple(f.name, guessUploadMime(f.name), b64)
+            }
+        }
+        val payload = entries.joinToString(",") { (name, mime, b64) ->
+            "{\"name\":${JSONObject.quote(name)},\"type\":${JSONObject.quote(mime)},\"b64\":${JSONObject.quote(b64)}}"
+        }
+        val js = "(function(){" +
+            "var el=document.querySelector(${JSONObject.quote(sel)});" +
+            "if(!el){return JSON.stringify({error:'selector not found: ' + ${JSONObject.quote(sel)}});}" +
+            "try{" +
+            "var list=[$payload]; if(el.multiple === false) list=list.slice(0,1);" +
+            "var dt=new DataTransfer();" +
+            "for(var i=0;i<list.length;i++){" +
+            "var bin=atob(list[i].b64);var arr=new Uint8Array(bin.length);" +
+            "for(var j=0;j<bin.length;j++)arr[j]=bin.charCodeAt(j);" +
+            "dt.items.add(new File([arr], list[i].name, {type:list[i].type}));}" +
+            "el.files=dt.files;" +
+            "el.dispatchEvent(new Event('change',{bubbles:true}));" +
+            "return JSON.stringify({ok:true,count:dt.files.length});" +
+            "}catch(e){return JSON.stringify({error:String(e)});}" +
+            "})()"
+        val raw = runCatching { evaluateJavascript(js) }.getOrElse { t ->
+            return BrowserActionResult.error("Upload injection failed: ${t.message}")
+        }
+        val obj = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("Upload injection returned: $raw")
+        val err = obj.optString("error").takeIf { it.isNotBlank() }
+        if (err != null) return BrowserActionResult.error("Upload failed: $err")
+        val count = obj.optInt("count", files.size)
+        return BrowserActionResult(
+            text = "Injected $count file(s) into ${JSONObject.quote(sel)}" +
+                " — the page received the change event$note",
+        )
+    }
+
+    private fun guessUploadMime(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "txt", "log", "md" -> "text/plain"
+        "json" -> "application/json"
+        "csv" -> "text/csv"
+        "html", "htm" -> "text/html"
+        "pdf" -> "application/pdf"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "zip" -> "application/zip"
+        else -> "application/octet-stream"
     }
 
     private val _currentURL = MutableStateFlow("")
@@ -851,7 +934,7 @@ class BrowserUseManager(
                 input.scrollCount, input.itemSelector, input.keywords,
             )
             BrowserAction.WAIT_FOR_DOM_STABLE -> return waitForDomStable(input.timeoutMs)
-            BrowserAction.UPLOAD_FILE -> return deliverUpload(input.files.orEmpty())
+            BrowserAction.UPLOAD_FILE -> return deliverUpload(input.files.orEmpty(), input.selector)
             BrowserAction.GET_CONSOLE_LOGS -> {
                 val lines = readConsoleLog(input.logLevel, 100)
                 return BrowserActionResult(
