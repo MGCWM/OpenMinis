@@ -1013,6 +1013,7 @@ class BrowserUseManager(
             BrowserAction.NAVIGATE -> navigate(input.url)
             BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage, elementSelector = input.selector)
             BrowserAction.GESTURE -> return performGesture(input)
+            BrowserAction.EXPORT_PDF -> return exportPdf()
             BrowserAction.CLICK -> click(input.selector, input.coordinateX, input.coordinateY)
             BrowserAction.TYPE -> type(input.selector, input.text)
             BrowserAction.GET_TEXT -> return getText(input.selector)
@@ -1218,8 +1219,31 @@ class BrowserUseManager(
 
     // -- Screenshot --
 
+    private data class FullPageCapture(
+        val bitmap: Bitmap,
+        val truncated: Boolean,
+        val originalHeightPx: Int,
+    )
+
     private suspend fun screenshot(fullPage: Boolean = false, elementSelector: String? = null): BrowserActionResult {
         if (!fullPage && !elementSelector.isNullOrBlank()) return elementScreenshot(elementSelector)
+        if (fullPage) {
+            val captured = captureFullPageBitmap()
+                ?: return BrowserActionResult.error("Failed to capture the full page")
+            return finishScreenshot(
+                captured.bitmap,
+                fullPage = true,
+                truncated = captured.truncated,
+                originalHeightPx = captured.originalHeightPx,
+            )
+        }
+        val bitmap = captureWebViewBitmap()
+            ?: return BrowserActionResult.error("Failed to capture screenshot")
+        return finishScreenshot(bitmap)
+    }
+
+    /** Full-page capture: stretch → capture → restore, shared by screenshot + PDF. */
+    private suspend fun captureFullPageBitmap(): FullPageCapture? {
         var truncated = false
         var originalHeightPx = 0
         var didStretch = false
@@ -1273,6 +1297,42 @@ class BrowserUseManager(
             delay(FULL_PAGE_REPAINT_DELAY_MS)
             Log.i(TAG, "full_page stretch: ${savedW}x$cssCappedHeight CSS (px=$cappedPx, original=$scrollHeightPx, truncated=$truncated)")
         }
+        val density = webView.resources.displayMetrics.density
+        val scrollHeightPx = if (cssScrollHeight > 0) {
+            (cssScrollHeight * density).toInt()
+        } else {
+            withContext(Dispatchers.Main) { webView.height }
+        }
+        originalHeightPx = scrollHeightPx
+        val cappedPx = scrollHeightPx.coerceAtMost(MAX_FULL_PAGE_HEIGHT_PX)
+        truncated = scrollHeightPx > MAX_FULL_PAGE_HEIGHT_PX
+
+        // Eagerize lazy images and wait two RAFs so layout settles before capture.
+        try {
+            evaluateJavascript(
+                """
+                (async () => {
+                    document.querySelectorAll('img[loading="lazy"]').forEach(i => i.loading = 'eager');
+                    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+                    return 'ok';
+                })()
+                """.trimIndent()
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) { /* best-effort */ }
+        delay(50)
+
+        // Snapshot current viewport, stretch to cssScrollHeight, capture, restore.
+        val applied = lastAppliedViewport ?: currentProfile.viewportSize
+        savedW = applied.first
+        savedH = applied.second
+        val cssCappedHeight = (cappedPx / density).toInt().coerceAtLeast(savedH)
+        withContext(Dispatchers.Main) {
+            applyViewport(savedW, cssCappedHeight)
+        }
+        didStretch = true
+        Log.i(TAG, "full_page stretch: ${savedW}x$cssCappedHeight CSS (px=$cappedPx, original=$scrollHeightPx, truncated=$truncated)")
 
         val bitmap = try {
             // A stretched full page is far taller than a display can be.
@@ -1283,14 +1343,149 @@ class BrowserUseManager(
                     applyViewport(savedW, savedH)
                 }
             }
-        } ?: return BrowserActionResult.error("Failed to capture screenshot")
+        } ?: return null
 
-        return finishScreenshot(
-            bitmap,
-            fullPage = fullPage,
-            truncated = truncated,
-            originalHeightPx = originalHeightPx,
+        return FullPageCapture(bitmap = bitmap, truncated = truncated, originalHeightPx = originalHeightPx)
+    }
+
+    /** [T-android-browser-pdf] Archive the current page as a multi-page A4-ish PDF. */
+    private suspend fun exportPdf(): BrowserActionResult {
+        val captured = captureFullPageBitmap()
+            ?: return BrowserActionResult.error("Failed to capture the page for PDF")
+        val bitmap = captured.bitmap
+        val ctx = appContext
+            ?: run {
+                bitmap.recycle()
+                return BrowserActionResult.error("No app context for PDF export")
+            }
+        val sid = sessionIdProvider()
+        val outDir = if (sid != null) {
+            File(File(File(ctx.filesDir, "minis-sessions"), sid), "browser").apply { mkdirs() }
+        } else {
+            File(ctx.cacheDir, "browser").apply { mkdirs() }
+        }
+        val name = "page_" + (System.currentTimeMillis() / 1000) + ".pdf"
+        val outFile = File(outDir, name)
+        val pages: Int
+        try {
+            pages = withContext(Dispatchers.IO) { buildPdf(bitmap, outFile) }
+        } catch (t: Throwable) {
+            bitmap.recycle()
+            return BrowserActionResult.error("PDF export failed: " + t.message)
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+        val guestPath = if (sid != null) "/var/minis/browser/$name" else outFile.absolutePath
+        return BrowserActionResult(
+            text = "PDF saved: " + guestPath +
+                "\n  Pages: " + pages + ", " + (outFile.length() / 1024) + "KB" +
+                (if (captured.truncated) {
+                    "\n  Note: the page was taller than the capture cap; the PDF covers up to the cap."
+                } else ""),
         )
+    }
+
+    /** Slice the (budget-bounded) full-page bitmap into A4-ish PDF pages. */
+    private fun buildPdf(bitmap: Bitmap, outFile: File): Int {
+        val pageW = 1240
+        val pageH = 1754 // A4 at ~150 dpi
+        val scale = pageW.toFloat() / bitmap.width
+        val sliceSrcH = (pageH / scale).toInt().coerceAtLeast(1)
+        val doc = android.graphics.pdf.PdfDocument()
+        var pageNo = 0
+        try {
+            var y = 0
+            while (y < bitmap.height) {
+                val h = minOf(sliceSrcH, bitmap.height - y)
+                val page = doc.startPage(
+                    android.graphics.pdf.PdfDocument.PageInfo.Builder(pageW, pageH, ++pageNo).create(),
+                )
+                val src = android.graphics.Rect(0, y, bitmap.width, y + h)
+                val dst = android.graphics.Rect(0, 0, pageW, (h * scale).toInt().coerceAtLeast(1))
+                val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                page.canvas.drawBitmap(bitmap, src, dst, paint)
+                doc.finishPage(page)
+                y += h
+            }
+            java.io.FileOutputStream(outFile).use { doc.writeTo(it) }
+        } finally {
+            doc.close()
+        }
+        return pageNo
+    }
+
+    /** Two-finger pinch: pointers spread out (zoom in) or in (zoom out). */
+    private suspend fun performPinch(centerCssX: Float, centerCssY: Float, spreadCss: Float) {
+        val density = withContext(Dispatchers.Main) { webView.resources.displayMetrics.density }
+        val cx = centerCssX * density
+        val cy = centerCssY * density
+        val offset = 60f * density
+        val spread = spreadCss * density
+        val ax0 = cx - offset
+        val bx0 = cx + offset
+        val ax1 = ax0 - spread
+        val bx1 = bx0 + spread
+
+        val t0 = uptime()
+        withContext(Dispatchers.Main) {
+            sendMultiTouch(t0, t0, android.view.MotionEvent.ACTION_DOWN, listOf(ax0 to cy))
+            sendMultiTouch(
+                t0, t0 + 20,
+                android.view.MotionEvent.ACTION_POINTER_DOWN or
+                    (1 shl android.view.MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                listOf(ax0 to cy, bx0 to cy),
+            )
+        }
+        val steps = 12
+        for (i in 1..steps) {
+            delay(25)
+            val f = i / steps.toFloat()
+            val ax = ax0 + (ax1 - ax0) * f
+            val bx = bx0 + (bx1 - bx0) * f
+            withContext(Dispatchers.Main) {
+                sendMultiTouch(
+                    t0, uptime(), android.view.MotionEvent.ACTION_MOVE,
+                    listOf(ax to cy, bx to cy),
+                )
+            }
+        }
+        withContext(Dispatchers.Main) {
+            sendMultiTouch(
+                t0, uptime(),
+                android.view.MotionEvent.ACTION_POINTER_UP or
+                    (1 shl android.view.MotionEvent.ACTION_POINTER_INDEX_SHIFT),
+                listOf(ax1 to cy, bx1 to cy),
+            )
+            sendMultiTouch(t0, uptime() + 10, android.view.MotionEvent.ACTION_UP, listOf(ax1 to cy))
+        }
+    }
+
+    private fun sendMultiTouch(
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        points: List<Pair<Float, Float>>,
+    ) {
+        val props = Array(points.size) { i ->
+            android.view.MotionEvent.PointerProperties().apply {
+                id = i
+                toolType = android.view.MotionEvent.TOOL_TYPE_FINGER
+            }
+        }
+        val coords = Array(points.size) { i ->
+            android.view.MotionEvent.PointerCoords().apply {
+                x = points[i].first
+                y = points[i].second
+                pressure = 1f
+                size = 1f
+            }
+        }
+        val ev = android.view.MotionEvent.obtain(
+            downTime, eventTime, action, points.size, props, coords,
+            0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        webView.dispatchTouchEvent(ev)
+        ev.recycle()
     }
 
     /** Shared tail for viewport / full-page / element screenshots. */
@@ -1416,7 +1611,7 @@ class BrowserUseManager(
     private suspend fun performGesture(input: BrowserActionInput): BrowserActionResult {
         if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
         val type = input.gesture?.trim()?.lowercase()?.replace("-", "_")
-            ?: return BrowserActionResult.error("gesture requires 'gesture' (long_press | double_click | drag)")
+            ?: return BrowserActionResult.error("gesture requires 'gesture' (long_press | double_click | drag | pinch)")
         val point = resolveCssPoint(input.selector, input.coordinateX, input.coordinateY)
             ?: return BrowserActionResult.error(
                 "Could not resolve the gesture target (selector not found, or pass coordinate_x / coordinate_y)",
@@ -1479,8 +1674,20 @@ class BrowserUseManager(
                         ") -> (" + tx + ", " + ty + ")",
                 )
             }
+            "pinch" -> {
+                val spread = (input.amount ?: 100).coerceIn(-600, 600).toFloat()
+                if (spread == 0f) {
+                    return BrowserActionResult.error("gesture=pinch needs a non-zero 'amount' (CSS px)")
+                }
+                performPinch(point.first, point.second, spread)
+                BrowserActionResult(
+                    text = "Pinched " + (if (spread > 0) "out (zoom in)" else "in (zoom out)") +
+                        " around (" + point.first.toInt() + ", " + point.second.toInt() + ") by " +
+                        kotlin.math.abs(spread).toInt() + "px",
+                )
+            }
             else -> BrowserActionResult.error(
-                "Unknown gesture '" + type + "' (use long_press | double_click | drag)",
+                "Unknown gesture '" + type + "' (use long_press | double_click | drag | pinch)",
             )
         }
     }

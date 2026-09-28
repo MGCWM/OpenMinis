@@ -31,7 +31,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     companion object {
         private const val TAG = "BrowserTabPool"
-        private const val MAX_TABS = 3
+        private const val MAX_TABS = 5
 
         /** [T-android-browser-tab-ownership] Tabs one agent may hold at once. */
         const val AGENT_TAB_QUOTA = 2
@@ -47,7 +47,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
          * the fan-out case, precisely because WebView memory is the real
          * constraint here.
          */
-        const val MAX_TABS_WITH_AGENTS = 6
+        const val MAX_TABS_WITH_AGENTS = 7
         private const val IDLE_CHECK_INTERVAL_MS = 60_000L  // 60 seconds
         /** Default idle timeout — matches iOS BrowserTabPool.idleTimeout (15 minutes). */
         const val DEFAULT_IDLE_TIMEOUT_MINUTES = 15

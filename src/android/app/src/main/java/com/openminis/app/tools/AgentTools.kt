@@ -155,7 +155,7 @@ object AgentTools {
             "Use get_network_log to see recent requests the page made (optional 'filter' = URL substring). Use get_response_log to read captured fetch/XHR RESPONSE bodies (the page-side ring; optional 'filter' = URL substring, last 20 shown, bodies truncated). " +
             "Use wait_for to wait until a selector appears and/or 'text' shows up (optional 'timeout' in seconds, default 10). Use select_option (selector + text = option label or value) to pick a dropdown option. " +
             "go_back / go_forward / reload control navigation; clear_site_data wipes cookies + web storage (logs out of every site). " +
-            "Use gesture for real touch gestures (injected as input, not script): long_press (context menus / selection), double_click, or drag with to_x/to_y as the destination in viewport CSS px. " +
+            "Use gesture for real touch gestures (injected as input, not script): long_press (context menus / selection), double_click, drag with to_x/to_y as the destination in viewport CSS px, or pinch (two-finger zoom around the target; 'amount' = how far each finger spreads in CSS px, default 100, negative zooms out). Use export_pdf to archive the current page as a multi-page PDF (saved under /var/minis/browser/ and returned as a path). " +
             "Use screenshot together with 'selector' to capture just that element (cropped; full_page still captures everything). " +
             "Use tab_id to target a specific tab (defaults to the most recently used tab).",
         parameters = mapOf(
@@ -181,7 +181,7 @@ object AgentTools {
             "files" to AgentToolParam("string", "For upload_file: the files to feed the page's file input — a JSON array of paths (a JSON-encoded string is also accepted). Paths may be /var/minis/workspace/…, /var/minis/attachments/…, /var/minis/shared/… or workspace-relative. The files are injected into the input directly; pair with 'selector' if the page's input is not the default input[type=file]. Size caps: 4 MB per file, 8 MB total."),
             "log_level" to AgentToolParam("string", "For get_console_logs: filter by level (log/info/warn/error/debug), or 'all' (default)."),
             "filter" to AgentToolParam("string", "For get_network_log: only return requests whose URL contains this substring."),
-            "gesture" to AgentToolParam("string", "For gesture: the gesture to perform", enumValues = listOf("long_press", "double_click", "drag")),
+            "gesture" to AgentToolParam("string", "For gesture: the gesture to perform", enumValues = listOf("long_press", "double_click", "drag", "pinch")),
             "to_x" to AgentToolParam("integer", "For gesture=drag: destination X in viewport CSS pixels."),
             "to_y" to AgentToolParam("integer", "For gesture=drag: destination Y in viewport CSS pixels."),
             "timeout" to AgentToolParam("integer", "Timeout in seconds for wait_for_dom_stable (default: 10, polls every 0.5s) or wait_for (default: 10, polls every 0.25s)."),
