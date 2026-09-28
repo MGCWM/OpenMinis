@@ -169,6 +169,11 @@ class BrowserUseManager(
     @Volatile
     private var pendingFileChooser: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
 
+    /** [T-android-browser-observability-v2] Page-start fallback when the
+     *  WebView lacks DOCUMENT_START_SCRIPT support. */
+    @Volatile
+    private var earlyScriptFallback: String? = null
+
     private fun appendLog(buf: ArrayDeque<String>, line: String) {
         synchronized(logLock) {
             if (buf.size >= MAX_LOG_ENTRIES) buf.removeFirst()
@@ -448,6 +453,7 @@ class BrowserUseManager(
         webView.addJavascriptInterface(jsBridge, "__minis__")
         setupWebViewClient()
         setupWebChromeClient()
+        installEarlyScripts()
         // Intercept page-triggered downloads (Content-Disposition attachment,
         // <a download>, unrenderable MIME types). Without a listener, WebView
         // silently drops these — the user taps "download" and nothing happens.
@@ -588,6 +594,13 @@ class BrowserUseManager(
                         com.openminis.app.ui.browser.BrowserExternalSchemeHandler
                             .Origin.AGENT_BACKGROUND,
                     )
+            }
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // [T-android-browser-observability-v2] Best-effort fallback for
+                // WebViews without DOCUMENT_START_SCRIPT; idempotent in-page.
+                earlyScriptFallback?.let { runCatching { view.evaluateJavascript(it, null) } }
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -955,6 +968,31 @@ class BrowserUseManager(
                     },
                 )
             }
+            BrowserAction.GO_BACK -> {
+                withContext(Dispatchers.Main) { goBack() }
+                return BrowserActionResult(text = "Navigated back (if a previous entry existed)")
+            }
+            BrowserAction.GO_FORWARD -> {
+                withContext(Dispatchers.Main) { goForward() }
+                return BrowserActionResult(text = "Navigated forward (if a forward entry existed)")
+            }
+            BrowserAction.RELOAD -> {
+                withContext(Dispatchers.Main) { reload() }
+                return BrowserActionResult(text = "Reloading the current page")
+            }
+            BrowserAction.SELECT_OPTION -> return selectOption(input.selector, input.text)
+            BrowserAction.WAIT_FOR -> return waitFor(input.selector, input.text, input.timeoutMs)
+            BrowserAction.CLEAR_SITE_DATA -> return clearSiteData()
+            BrowserAction.GET_RESPONSE_LOG -> {
+                val lines = runCatching { readResponseLog(input.filter) }.getOrDefault(emptyList())
+                return BrowserActionResult(
+                    text = if (lines.isEmpty()) {
+                        "No fetch/XHR responses captured for this tab yet."
+                    } else {
+                        "Response log (last ${lines.size} entries):\n" + lines.joinToString("\n")
+                    },
+                )
+            }
             BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
         }
@@ -1271,6 +1309,97 @@ class BrowserUseManager(
             Log.e(TAG, "captureWebViewBitmap failed: ${e.message}")
             null
         }
+    }
+
+    private suspend fun selectOption(selector: String?, want: String?): BrowserActionResult {
+        if (selector == null) return BrowserActionResult.error("select_option requires 'selector'")
+        if (want == null) return BrowserActionResult.error("select_option requires 'text' (option label or value)")
+        return evaluateAndReturn(BrowserUseJS.selectOption(selector, want))
+    }
+
+    /** Poll until a selector appears and/or a text shows up (default 10 s). */
+    private suspend fun waitFor(selector: String?, text: String?, timeoutMs: Int?): BrowserActionResult {
+        if (selector == null && text == null) {
+            return BrowserActionResult.error("wait_for requires 'selector' and/or 'text'")
+        }
+        val timeout = (timeoutMs?.takeIf { it > 0 }?.toLong() ?: 10_000L).coerceAtMost(120_000L)
+        val started = System.currentTimeMillis()
+        val deadline = started + timeout
+        val sel = selector ?: "html"
+        while (System.currentTimeMillis() < deadline) {
+            if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
+            val raw = runCatching { evaluateJavascript(BrowserUseJS.waitProbe(sel, text)) }.getOrNull()
+            val obj = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
+            if (obj?.optBoolean("ok") == true) {
+                val matched = obj.optString("matched")
+                val tag = obj.optString("tag")
+                val secs = (System.currentTimeMillis() - started) / 1000.0
+                return BrowserActionResult(
+                    text = "Condition met ($matched" + (if (tag.isNotBlank()) ", <$tag>" else "") + ") after " + secs + "s",
+                )
+            }
+            kotlinx.coroutines.delay(250)
+        }
+        return BrowserActionResult.error(
+            "Timed out after " + (timeout / 1000) + "s waiting for " +
+                (selector ?: "") + (if (text != null) " text=" + JSONObject.quote(text) else ""),
+        )
+    }
+
+    /** Captured fetch/XHR response bodies (ring lives in the page). */
+    private suspend fun readResponseLog(filter: String?): List<String> {
+        val raw = evaluateJavascript("JSON.stringify((window.__minis_net__ || []).slice(-200))")
+        val arr = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return emptyList()
+        val f = filter?.trim()?.takeIf { it.isNotEmpty() }
+        val out = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val u = o.optString("u")
+            if (f != null && !u.contains(f, ignoreCase = true)) continue
+            val kind = o.optString("t")
+            val m = o.optString("m")
+            val s = o.optInt("s")
+            val ms = o.optLong("ms")
+            val b = o.optString("b").replace("\n", " ").take(600)
+            out.add("[" + kind + " " + s + " " + ms + "ms] " + m + " " + u + (if (b.isNotBlank()) " body: " + b else ""))
+        }
+        return out.takeLast(20)
+    }
+
+    /** Wipe cookies + web storage for the whole WebView profile. */
+    private suspend fun clearSiteData(): BrowserActionResult {
+        return try {
+            withContext(Dispatchers.Main) {
+                android.webkit.CookieManager.getInstance().removeAllCookies(null)
+                android.webkit.CookieManager.getInstance().flush()
+                android.webkit.WebStorage.getInstance().deleteAllData()
+            }
+            BrowserActionResult(text = "Cleared cookies and web storage for this browser profile (site logins are gone).")
+        } catch (t: Throwable) {
+            BrowserActionResult.error("clear_site_data failed: " + t.message)
+        }
+    }
+
+    /** Register the fetch/XHR+error instrumentation as early as possible. */
+    private fun installEarlyScripts() {
+        val script = BrowserUseJS.EARLY_NET_INSTRUMENTATION_JS
+        try {
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(
+                    androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT,
+                )
+            ) {
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                    webView, script, setOf("*"),
+                )
+                Log.d(TAG, "net instrumentation registered at document start")
+                return
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "document-start script unsupported: ${t.message}")
+        }
+        // Fallback: inject on page start (idempotent in-page guard).
+        earlyScriptFallback = script
+        Log.d(TAG, "net instrumentation registered via page-start fallback")
     }
 
     private fun saveBitmapToFile(bitmap: Bitmap, prefix: String, quality: Int = SCREENSHOT_QUALITY): File {
