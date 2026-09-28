@@ -141,8 +141,8 @@ jobs:
             --tests 'com.openminis.app.ui.settings.StepperClampTest' \
             --tests 'com.openminis.app.service.ForegroundNotificationPolicyTest' \
             --tests 'com.openminis.app.backup.BackupSelectionPolicyTest' \
-            --tests 'com.openminis.app.service.SessionKeyPolicyTest'
-            --tests 'com.openminis.app.browser.ScreenshotBudgetTest'
+            --tests 'com.openminis.app.service.SessionKeyPolicyTest' \
+            --tests 'com.openminis.app.browser.ScreenshotBudgetTest' \
             --tests 'com.openminis.app.browser.BrowserActionInputTest'
 
       - name: assembleRelease
