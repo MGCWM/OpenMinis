@@ -40,7 +40,10 @@ enum class BrowserAction(val value: String) {
     SELECT_OPTION("select_option"),
     WAIT_FOR("wait_for"),
     GET_RESPONSE_LOG("get_response_log"),
-    CLEAR_SITE_DATA("clear_site_data");
+    CLEAR_SITE_DATA("clear_site_data"),
+    // [T-android-browser-gestures] Real touch gestures (injected as input
+    // events): long-press context menus/selection, double-tap, drag.
+    GESTURE("gesture");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action
@@ -57,7 +60,7 @@ enum class BrowserAction(val value: String) {
 
         /** Actions that visually change the page and warrant an auto-snapshot. */
         val visualChangeActions: Set<BrowserAction> = setOf(
-            NAVIGATE, CLICK, SCROLL, HOVER, TYPE
+            NAVIGATE, CLICK, SCROLL, HOVER, TYPE, GESTURE
         )
 
         /**

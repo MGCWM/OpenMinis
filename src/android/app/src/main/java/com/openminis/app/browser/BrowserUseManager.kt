@@ -1011,7 +1011,8 @@ class BrowserUseManager(
         val prevUrl = withContext(Dispatchers.Main) { webView.url }
         var result: BrowserActionResult = when (input.action) {
             BrowserAction.NAVIGATE -> navigate(input.url)
-            BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage)
+            BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage, elementSelector = input.selector)
+            BrowserAction.GESTURE -> return performGesture(input)
             BrowserAction.CLICK -> click(input.selector, input.coordinateX, input.coordinateY)
             BrowserAction.TYPE -> type(input.selector, input.text)
             BrowserAction.GET_TEXT -> return getText(input.selector)
@@ -1217,7 +1218,8 @@ class BrowserUseManager(
 
     // -- Screenshot --
 
-    private suspend fun screenshot(fullPage: Boolean = false): BrowserActionResult {
+    private suspend fun screenshot(fullPage: Boolean = false, elementSelector: String? = null): BrowserActionResult {
+        if (!fullPage && !elementSelector.isNullOrBlank()) return elementScreenshot(elementSelector)
         var truncated = false
         var originalHeightPx = 0
         var didStretch = false
@@ -1283,30 +1285,204 @@ class BrowserUseManager(
             }
         } ?: return BrowserActionResult.error("Failed to capture screenshot")
 
-        val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, SCREENSHOT_QUALITY, out)
-        val jpegBytes = out.toByteArray()
-
-        val file = saveBitmapToFile(bitmap, "screenshot")
-        val base64 = Base64.encodeToString(jpegBytes, Base64.NO_WRAP)
-
-        val w = bitmap.width; val h = bitmap.height
-        bitmap.recycle()
-
-        Log.i(TAG, "Screenshot saved: ${file.absolutePath}, ${w}x$h, ${jpegBytes.size} bytes (full_page=$fullPage)")
-
-        val meta = viewportMetadata(
-            imageW = w,
-            imageH = h,
-            fileSize = jpegBytes.size,
+        return finishScreenshot(
+            bitmap,
             fullPage = fullPage,
             truncated = truncated,
             originalHeightPx = originalHeightPx,
         )
+    }
+
+    /** Shared tail for viewport / full-page / element screenshots. */
+    private suspend fun finishScreenshot(
+        bitmap: Bitmap,
+        fullPage: Boolean = false,
+        truncated: Boolean = false,
+        originalHeightPx: Int = 0,
+        note: String? = null,
+    ): BrowserActionResult {
+        val w = bitmap.width; val h = bitmap.height
+        val file = try {
+            withContext(Dispatchers.IO) { saveBitmapToFile(bitmap, "screenshot") }
+        } finally {
+            bitmap.recycle()
+        }
+        // Encode once and release native pixels before creating the protocol payload.
+        val base64 = withContext(Dispatchers.IO) {
+            Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+        }
+        val fileSize = file.length().toInt()
+        Log.i(TAG, "Screenshot saved: ${file.absolutePath}, ${w}x$h, $fileSize bytes (full_page=$fullPage)")
+
+        val meta = buildString {
+            append(viewportMetadata(
+                imageW = w,
+                imageH = h,
+                fileSize = fileSize,
+                fullPage = fullPage,
+                truncated = truncated,
+                originalHeightPx = originalHeightPx,
+            ))
+            if (note != null) {
+                append("\n  ").append(note)
+            }
+        }
 
         return BrowserActionResult(
             text = meta, base64Image = base64, imageFilePath = file.absolutePath
         )
+    }
+
+    /** [T-android-browser-gestures] Crop the current viewport to one element. */
+    private suspend fun elementScreenshot(selector: String): BrowserActionResult {
+        val rectRaw = runCatching { evaluateJavascript(BrowserUseJS.elementRect(selector)) }.getOrNull()
+            ?: return BrowserActionResult.error("Element screenshot failed: no rect for $selector")
+        val rect = runCatching { JSONObject(rectRaw) }.getOrNull()
+            ?: return BrowserActionResult.error("Element screenshot failed: bad rect JSON")
+        rect.optString("error").takeIf { it.isNotBlank() }?.let {
+            return BrowserActionResult.error("Element screenshot failed: $it")
+        }
+        val cssX = rect.optDouble("x", -1.0)
+        val cssY = rect.optDouble("y", -1.0)
+        val cssW = rect.optDouble("w", 0.0)
+        val cssH = rect.optDouble("h", 0.0)
+        if (cssX < 0 || cssY < 0 || cssW < 1 || cssH < 1) {
+            return BrowserActionResult.error("Element has no visible box (is it hidden?)")
+        }
+        delay(250) // let scrollIntoView settle
+        val density = withContext(Dispatchers.Main) { webView.resources.displayMetrics.density }
+        val bitmap = captureWebViewBitmap()
+            ?: return BrowserActionResult.error("Failed to capture the viewport")
+        val phys = withContext(Dispatchers.Main) { webView.width to webView.height }
+        if (phys.first <= 0 || phys.second <= 0) {
+            bitmap.recycle()
+            return BrowserActionResult.error("WebView has no layout box")
+        }
+        // The captured bitmap may be budget-scaled; map CSS -> bitmap space.
+        val scale = bitmap.width.toFloat() / phys.first
+        var bx = (cssX * density * scale).toInt()
+        var by = (cssY * density * scale).toInt()
+        var bw = (cssW * density * scale).toInt()
+        var bh = (cssH * density * scale).toInt()
+        bx = bx.coerceIn(0, bitmap.width - 1)
+        by = by.coerceIn(0, bitmap.height - 1)
+        bw = bw.coerceIn(1, bitmap.width - bx)
+        bh = bh.coerceIn(1, bitmap.height - by)
+        val cropped = try {
+            Bitmap.createBitmap(bitmap, bx, by, bw, bh)
+        } catch (t: Throwable) {
+            null
+        } finally {
+            bitmap.recycle()
+        }
+        if (cropped == null) return BrowserActionResult.error("Element crop failed")
+        return finishScreenshot(
+            cropped,
+            note = "Element: $selector (${cssW.toInt()}x${cssH.toInt()} CSS px)",
+        )
+    }
+
+    // -- [T-android-browser-gestures] Injected touch gestures --
+
+    private fun uptime() = android.os.SystemClock.uptimeMillis()
+
+    private fun sendTouchEvent(downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
+        val ev = android.view.MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
+        webView.dispatchTouchEvent(ev)
+        ev.recycle()
+    }
+
+    private suspend fun resolveCssPoint(selector: String?, x: Int?, y: Int?): Pair<Float, Float>? {
+        if (!selector.isNullOrBlank()) {
+            val raw = runCatching { evaluateJavascript(BrowserUseJS.elementRect(selector)) }.getOrNull()
+                ?: return null
+            val rect = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+            if (rect.optString("error").isNotBlank()) return null
+            val cx = rect.optDouble("x", -1.0) + rect.optDouble("w", 0.0) / 2
+            val cy = rect.optDouble("y", -1.0) + rect.optDouble("h", 0.0) / 2
+            if (cx < 0 || cy < 0) return null
+            delay(150)
+            return Pair(cx.toFloat(), cy.toFloat())
+        }
+        if (x != null && y != null) return Pair(x.toFloat(), y.toFloat())
+        return null
+    }
+
+    /**
+     * Real input injection through WebView.dispatchTouchEvent — the same
+     * path a finger takes, so touch handlers, context menus and drag-sorting
+     * all see genuine events (script-only dispatches do not).
+     */
+    private suspend fun performGesture(input: BrowserActionInput): BrowserActionResult {
+        if (isDisposed) return BrowserActionResult.error("Browser tab is closed")
+        val type = input.gesture?.trim()?.lowercase()?.replace("-", "_")
+            ?: return BrowserActionResult.error("gesture requires 'gesture' (long_press | double_click | drag)")
+        val point = resolveCssPoint(input.selector, input.coordinateX, input.coordinateY)
+            ?: return BrowserActionResult.error(
+                "Could not resolve the gesture target (selector not found, or pass coordinate_x / coordinate_y)",
+            )
+        val density = withContext(Dispatchers.Main) { webView.resources.displayMetrics.density }
+        val sx = point.first * density
+        val sy = point.second * density
+        return when (type) {
+            "long_press" -> {
+                val t0 = uptime()
+                withContext(Dispatchers.Main) { sendTouchEvent(t0, t0, android.view.MotionEvent.ACTION_DOWN, sx, sy) }
+                delay(300)
+                withContext(Dispatchers.Main) { sendTouchEvent(t0, uptime(), android.view.MotionEvent.ACTION_MOVE, sx, sy) }
+                delay(350)
+                withContext(Dispatchers.Main) { sendTouchEvent(t0, uptime(), android.view.MotionEvent.ACTION_UP, sx, sy) }
+                BrowserActionResult(
+                    text = "Long-pressed (" + point.first.toInt() + ", " + point.second.toInt() + ") for ~650ms",
+                )
+            }
+            "double_click", "double_tap" -> {
+                val t0 = uptime()
+                withContext(Dispatchers.Main) {
+                    sendTouchEvent(t0, t0, android.view.MotionEvent.ACTION_DOWN, sx, sy)
+                    sendTouchEvent(t0, t0 + 40, android.view.MotionEvent.ACTION_UP, sx, sy)
+                }
+                delay(110)
+                withContext(Dispatchers.Main) {
+                    val t1 = uptime()
+                    sendTouchEvent(t1, t1, android.view.MotionEvent.ACTION_DOWN, sx, sy)
+                    sendTouchEvent(t1, t1 + 40, android.view.MotionEvent.ACTION_UP, sx, sy)
+                }
+                BrowserActionResult(
+                    text = "Double-tapped (" + point.first.toInt() + ", " + point.second.toInt() + ")",
+                )
+            }
+            "drag" -> {
+                val tx = input.toX
+                val ty = input.toY
+                if (tx == null || ty == null) {
+                    return BrowserActionResult.error("gesture=drag requires 'to_x' and 'to_y' (viewport CSS px)")
+                }
+                val ex = tx * density
+                val ey = ty * density
+                val t0 = uptime()
+                withContext(Dispatchers.Main) { sendTouchEvent(t0, t0, android.view.MotionEvent.ACTION_DOWN, sx, sy) }
+                delay(200) // press-and-hold so lists enter drag mode
+                val steps = 12
+                for (i in 1..steps) {
+                    delay(30)
+                    val f = i / steps.toFloat()
+                    val x = sx + (ex - sx) * f
+                    val y = sy + (ey - sy) * f
+                    withContext(Dispatchers.Main) {
+                        sendTouchEvent(t0, uptime(), android.view.MotionEvent.ACTION_MOVE, x, y)
+                    }
+                }
+                withContext(Dispatchers.Main) { sendTouchEvent(t0, uptime(), android.view.MotionEvent.ACTION_UP, ex, ey) }
+                BrowserActionResult(
+                    text = "Dragged (" + point.first.toInt() + ", " + point.second.toInt() +
+                        ") -> (" + tx + ", " + ty + ")",
+                )
+            }
+            else -> BrowserActionResult.error(
+                "Unknown gesture '" + type + "' (use long_press | double_click | drag)",
+            )
+        }
     }
 
     /** Collect viewport + page metadata for screenshot results. Mirrors iOS viewportMetadata. */
