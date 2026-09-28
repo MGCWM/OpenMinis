@@ -81,6 +81,17 @@ object BrowserUseJS {
         })();
     """.trimIndent()
 
+    /** Scroll the element into view and return its viewport rect (CSS px). */
+    fun elementRect(selector: String): String = """
+        (function(){
+          var el = document.querySelector(${JSONObject.quote(selector)});
+          if (!el) return JSON.stringify({error:'selector not found'});
+          el.scrollIntoView({block:'center', inline:'center'});
+          var r = el.getBoundingClientRect();
+          return JSON.stringify({x:r.left, y:r.top, w:r.width, h:r.height, tag:el.tagName});
+        })()
+    """.trimIndent()
+
     /** One synchronous poll for [waitFor] — returns JSON `{ok, matched, tag}`. */
     fun waitProbe(selector: String, text: String?): String = """
         (function(){

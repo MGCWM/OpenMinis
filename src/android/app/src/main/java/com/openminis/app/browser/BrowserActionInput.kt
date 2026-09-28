@@ -53,6 +53,11 @@ data class BrowserActionInput(
     val logLevel: String? = null,
     /** URL-substring filter for get_network_log. */
     val filter: String? = null,
+    /** [T-android-browser-gestures] Gesture type: long_press | double_click | drag. */
+    val gesture: String? = null,
+    /** Drag destination (viewport CSS px) for gesture=drag. */
+    val toX: Int? = null,
+    val toY: Int? = null,
 ) {
     companion object {
         fun parse(json: String): BrowserActionInput? {
@@ -90,6 +95,9 @@ data class BrowserActionInput(
                     files = parseFiles(obj),
                     logLevel = obj.optString("log_level").ifEmpty { null },
                     filter = obj.optString("filter").ifEmpty { null },
+                    gesture = obj.optString("gesture").ifEmpty { null },
+                    toX = if (obj.has("to_x")) obj.optInt("to_x") else null,
+                    toY = if (obj.has("to_y")) obj.optInt("to_y") else null,
                 )
             } catch (_: Exception) {
                 null

@@ -33,6 +33,21 @@ class BrowserActionInputTest {
     }
 
     @Test
+    fun `gesture fields parse`() {
+        val a = BrowserActionInput.parse(
+            """{"action":"gesture","gesture":"drag","selector":"#track","to_x":300,"to_y":400}"""
+        )!!
+        assertEquals("drag", a.gesture)
+        assertEquals(300, a.toX)
+        assertEquals(400, a.toY)
+        assertEquals("#track", a.selector)
+
+        val b = BrowserActionInput.parse("""{"action":"gesture","gesture":"long_press","coordinate_x":10,"coordinate_y":20}""")!!
+        assertEquals("long_press", b.gesture)
+        assertEquals(10, b.coordinateX)
+    }
+
+    @Test
     fun `new actions resolve by name`() {
         assertEquals(
             BrowserAction.UPLOAD_FILE,
