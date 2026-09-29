@@ -1430,15 +1430,16 @@ class BrowserUseManager(
         withContext(Dispatchers.Main) {
             sendMultiTouch(t0, t0, android.view.MotionEvent.ACTION_DOWN, listOf(ax0 to cy))
             sendMultiTouch(
-                t0, t0 + 20,
+                t0, t0 + 50,
                 android.view.MotionEvent.ACTION_POINTER_DOWN or
                     (1 shl android.view.MotionEvent.ACTION_POINTER_INDEX_SHIFT),
                 listOf(ax0 to cy, bx0 to cy),
             )
         }
+        delay(60) // brief settle so the recognizer sees two stable contacts first
         val steps = 12
         for (i in 1..steps) {
-            delay(25)
+            delay(30)
             val f = i / steps.toFloat()
             val ax = ax0 + (ax1 - ax0) * f
             val bx = bx0 + (bx1 - bx0) * f
@@ -1581,6 +1582,14 @@ class BrowserUseManager(
 
     private fun uptime() = android.os.SystemClock.uptimeMillis()
 
+    /** Current visualViewport.scale, or null when unavailable. */
+    private suspend fun readVisualScale(): Float? {
+        val raw = runCatching {
+            evaluateJavascript("String(window.visualViewport ? window.visualViewport.scale : '')")
+        }.getOrNull()?.trim() ?: return null
+        return raw.toFloatOrNull()
+    }
+
     private fun sendTouchEvent(downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
         val ev = android.view.MotionEvent.obtain(downTime, eventTime, action, x, y, 0)
         webView.dispatchTouchEvent(ev)
@@ -1679,12 +1688,34 @@ class BrowserUseManager(
                 if (spread == 0f) {
                     return BrowserActionResult.error("gesture=pinch needs a non-zero 'amount' (CSS px)")
                 }
+                val before = readVisualScale()
                 performPinch(point.first, point.second, spread)
-                BrowserActionResult(
-                    text = "Pinched " + (if (spread > 0) "out (zoom in)" else "in (zoom out)") +
-                        " around (" + point.first.toInt() + ", " + point.second.toInt() + ") by " +
-                        kotlin.math.abs(spread).toInt() + "px",
-                )
+                delay(250)
+                val after = readVisualScale()
+                val zoomed = before != null && after != null && kotlin.math.abs(after - before) > 0.01f
+                if (zoomed) {
+                    BrowserActionResult(
+                        text = "Pinched " + (if (spread > 0) "out (zoom in)" else "in (zoom out)") +
+                            " around (" + point.first.toInt() + ", " + point.second.toInt() + ") by " +
+                            kotlin.math.abs(spread).toInt() + "px" +
+                            " — scale " + before + " -> " + after,
+                    )
+                } else {
+                    // [T-android-browser-pinch-fallback] The synthetic stream
+                    // reaches the page, but the native pinch recognizer can
+                    // ignore it (it normally consumes real window input). Fall
+                    // back to a programmatic zoom so the visible result lands.
+                    val factor = (1f + spread / 400f).coerceIn(0.4f, 3f)
+                    val accepted = withContext(Dispatchers.Main) { webView.zoomBy(factor) }
+                    delay(350)
+                    val now = readVisualScale()
+                    BrowserActionResult(
+                        text = "Pinch injected (page handlers received it); native zoom did not engage, " +
+                            "so a programmatic zoom was applied: zoomBy(" + factor + ") accepted=" + accepted +
+                            ", scale " + before + " -> " + now +
+                            (if (spread < 0) " (zoom out)" else " (zoom in)"),
+                    )
+                }
             }
             else -> BrowserActionResult.error(
                 "Unknown gesture '" + type + "' (use long_press | double_click | drag | pinch)",
