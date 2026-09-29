@@ -1570,12 +1570,12 @@ class BrowserUseManager(
                     // ignore it (it normally consumes real window input). Fall
                     // back to a programmatic zoom so the visible result lands.
                     val factor = (1f + spread / 400f).coerceIn(0.4f, 3f)
-                    val accepted = withContext(Dispatchers.Main) { webView.zoomBy(factor) }
+                    withContext(Dispatchers.Main) { webView.zoomBy(factor) }
                     delay(350)
                     val now = readVisualScale()
                     BrowserActionResult(
                         text = "Pinch injected (page handlers received it); native zoom did not engage, " +
-                            "so a programmatic zoom was applied: zoomBy(" + factor + ") accepted=" + accepted +
+                            "so a programmatic zoom was applied: zoomBy(" + factor + ")" +
                             ", scale " + before + " -> " + now +
                             (if (spread < 0) " (zoom out)" else " (zoom in)"),
                     )
