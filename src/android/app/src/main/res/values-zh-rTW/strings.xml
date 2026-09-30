@@ -1806,4 +1806,5 @@
     <string name="voice_mic_in_use">麥克風正被其他應用程式佔用（例如通話或錄音），請結束後再試一次。</string>
     <string name="voice_mic_unavailable">無法使用麥克風，請再試一次。</string>
     <string name="chat_context_usage_hint">上下文已用 %1$s · %2$s</string>
+    <string name="model_picker_edit_provider">編輯 %1$s</string>
 </resources>

@@ -1899,4 +1899,5 @@
     <string name="voice_mic_unavailable">无法使用麦克风，请重试。</string>
     <string name="voice_send_still_transcribing">仍在转写，文字出现后再点发送。</string>
     <string name="chat_context_usage_hint">上下文已用 %1$s · %2$s</string>
+    <string name="model_picker_edit_provider">编辑 %1$s</string>
 </resources>
