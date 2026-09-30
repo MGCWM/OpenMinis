@@ -779,6 +779,36 @@ object ThinkingRuleResolver {
     fun clampEffortForModel(effort: String, lid: String): String =
         if (effort == "xhigh" && (lid.contains("mimo") || lid.contains("agnes"))) "high" else effort
 
+    /**
+     * [OpenMinis#377] Snap an OFF-tier value onto what the model will actually accept.
+     *
+     * Distinct from [clampEffort], and the difference is the whole point. clampEffort
+     * walks DOWN then UP, so a `["high","max"]` model turns an OFF request into "high" —
+     * inverting the user's intent, which is exactly why the OFF dispatch below refuses to
+     * use it. The right answer for OFF is always the LOWEST tier the model declares: it is
+     * the closest thing to "don't think" that the model will accept, and it can never
+     * escalate past what a higher explicit level would have sent.
+     *
+     * Returns [effort] unchanged when the model declares nothing (or declares the
+     * requested value), so models without catalog effort data behave exactly as before.
+     *
+     * The bug this exists for: gpt-6-astra declares `[low, medium, high, xhigh, max]` and
+     * rejects `reasoning.effort:"none"` with HTTP 400 `invalid_request_error`. Compaction
+     * sends OFF, the official-OpenAI off tier is "none", and every compact — including all
+     * four halving retries — died on the parameter rather than on its size.
+     */
+    fun clampOffEffort(effort: String, values: List<String>?): String {
+        if (values.isNullOrEmpty()) return effort
+        if (values.contains(effort)) return effort
+        val ladder = listOf("none", "minimal", "low", "medium", "high", "xhigh", "max")
+        // Lowest DECLARED tier by ladder order; unknown spellings are ignored rather
+        // than guessed at, and if none are recognisable the original value stands.
+        return values.mapNotNull { v -> ladder.indexOf(v).takeIf { it >= 0 }?.to(v) }
+            .minByOrNull { it.first }
+            ?.second
+            ?: effort
+    }
+
     /** Snap a requested tier onto the model's declared set, walking DOWN then up. */
     fun clampEffort(effort: String, values: List<String>?): String {
         if (values.isNullOrEmpty()) return effort
