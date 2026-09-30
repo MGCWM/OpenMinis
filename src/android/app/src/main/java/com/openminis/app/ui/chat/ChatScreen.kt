@@ -1661,7 +1661,7 @@ fun ChatScreen(
         }
     }
 
-    val performSendOrEnqueue: (String) -> Unit = handler@{ rawText ->
+    val performSendOrEnqueueNow: (String) -> Unit = handler@{ rawText ->
         if (viewModel.tryExecuteInputAsSlashCommand(rawText)) {
             viewModel.setInputText("")
             releaseComposerAfterSend()
@@ -1693,6 +1693,41 @@ fun ChatScreen(
             tracedScrollToItem("SEND-PATH/settle", 0, 0)
         }
     }
+    // [T-voice-send-waits-for-asr] Second half of a send deferred until voice
+    // input finished. The transcript reaches the composer through the panel's
+    // callbacks, so copy the final transcript over explicitly before deciding,
+    // then send (or enqueue, while a reply runs — sendMessage routes that)
+    // exactly as the tap would have.
+    val submitAfterVoice: () -> Unit = {
+        val transcript = com.openminis.app.ui.chat.voice.VoiceSendGate.transcript
+        if (com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
+            transcript.isNotEmpty() && viewModel.inputText.value != transcript
+        ) {
+            viewModel.setInputText(transcript)
+            viewModel.updateSlashMenuState(transcript)
+        }
+        val text = viewModel.inputText.value
+        if (text.isNotBlank() || viewModel.attachments.value.isNotEmpty()) {
+            performSendOrEnqueueNow(text)
+        } else {
+            AppLogger.info("VoiceSend", "[voice-send] nothing to send after recognition finished")
+        }
+    }
+    // [T-voice-send-waits-for-asr] Every send entry goes through this gate:
+    // while voice mode still owes text (mic capturing, audio held below the
+    // segment minimum, a transcription in flight) the send waits for it
+    // instead of clearing the composer — which cancelled the capture and lost
+    // the last sentence spoken before the tap.
+    val deferSendUntilVoiceFinished: () -> Boolean = {
+        com.openminis.app.ui.chat.voice.VoiceSendGate.deferSendIfOwed(coroutineScope, context) {
+            submitAfterVoice()
+        }
+    }
+    val performSendOrEnqueue: (String) -> Unit = handler@{ rawText ->
+        if (deferSendUntilVoiceFinished()) return@handler
+        performSendOrEnqueueNow(rawText)
+    }
+
     // T196: timestamp of the last drag-stop. The streaming auto-follow LE
     // below has three stages (initial scroll → re-pin after frame → settle
     // after 220 ms) any of which can fire on the *next* token after a drag
@@ -5642,6 +5677,9 @@ fun ChatScreen(
                         // onSend; this lambda is the single source of
                         // truth for what "press Enter to send" means.
                         val performEnterSend: () -> Boolean = handler@{
+                            // [T-voice-send-waits-for-asr] Same gate as the
+                            // button: finish owed voice text first.
+                            if (deferSendUntilVoiceFinished()) return@handler true
                             if (inputText.isBlank() && attachments.isEmpty()) return@handler false
                             // Intercept slash commands so "/compact" et al.
                             // run locally instead of being sent as a chat
@@ -6597,7 +6635,15 @@ fun ChatScreen(
                         // satisfies the composer's send guard. Without this an
                         // image-only "look at this" send is impossible.
                         val hasText = inputText.isNotBlank()
-                        val hasContent = hasText || attachments.isNotEmpty()
+                        // [T-voice-send-waits-for-asr] Voice mode has captured
+                        // speech that is not text yet. Send must be tappable
+                        // then — tapping it is how the user says "I'm done" —
+                        // even though the composer may still be empty; the tap
+                        // finishes recognition and then sends or enqueues.
+                        val voiceOwesText = com.openminis.app.ui.chat.voice.VoiceModePrefs.isVoiceActive &&
+                            (sttState != com.openminis.app.speech.RecognitionState.IDLE ||
+                                com.openminis.app.ui.chat.voice.VoiceSendGate.isFinishingForSend)
+                        val hasContent = hasText || attachments.isNotEmpty() || voiceOwesText
                         val showStop = isStreaming && !hasContent
                         if (showStop) {
                             Box(

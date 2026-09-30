@@ -2058,4 +2058,17 @@
     <string name="provider_refresh_auth_failed_title">Sign-in expired</string>
     <string name="sub_agent_builtin_description">Open-ended work that needs its own tool loop: exploring a codebase or the web over many rounds, digesting bulk output into a conclusion, or running independent branches in parallel.</string>
     <string name="sub_agent_builtin_name">General Sub Agent</string>
+    <string name="voice_asr_discard">Discard</string>
+    <string name="voice_asr_failed_message">%1$d seconds of speech could not be transcribed (%2$s). Try again?</string>
+    <string name="voice_asr_failed_title">Transcription failed</string>
+    <string name="voice_asr_next_model">the next voice model</string>
+    <string name="voice_asr_retry">Retry</string>
+    <string name="voice_asr_retrying_with">Retrying with %1$s</string>
+    <string name="voice_asr_switch_model">Switch Model</string>
+    <string name="voice_asr_switch_model_a11y">Retry with the next voice model</string>
+    <string name="voice_asr_system_recognition">System speech recognition</string>
+    <string name="voice_asr_timed_out">Speech recognition timed out</string>
+    <string name="voice_mic_in_use">The microphone is in use by another app (for example a call or a recording). Please try again after it finishes.</string>
+    <string name="voice_mic_unavailable">The microphone could not be used. Please try again.</string>
+    <string name="voice_send_still_transcribing">Still transcribing. Tap Send again when the text appears.</string>
 </resources>

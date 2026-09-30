@@ -1798,4 +1798,11 @@
     <string name="provider_refresh_auth_failed_title">登入已失效</string>
     <string name="sub_agent_builtin_description">需要自己的工具循環才能完成的開放式工作：多輪探索程式庫或網頁、把大量輸出提煉成結論，或並行跑幾條獨立分支。</string>
     <string name="sub_agent_builtin_name">通用子代理</string>
+    <string name="voice_asr_next_model">下一個語音模型</string>
+    <string name="voice_asr_retrying_with">正在使用 %1$s 重試</string>
+    <string name="voice_asr_switch_model">切換模型</string>
+    <string name="voice_asr_switch_model_a11y">使用下一個語音模型重試</string>
+    <string name="voice_asr_system_recognition">系統語音辨識</string>
+    <string name="voice_mic_in_use">麥克風正被其他應用程式佔用（例如通話或錄音），請結束後再試一次。</string>
+    <string name="voice_mic_unavailable">無法使用麥克風，請再試一次。</string>
 </resources>

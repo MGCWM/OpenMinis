@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="voice_mic_in_use">Mikrofon koristi druga aplikacija (npr. poziv ili snimanje). Pokušajte ponovno kada završi.</string>
+    <string name="voice_mic_unavailable">Mikrofon nije moguće koristiti. Pokušajte ponovno.</string>
+</resources>

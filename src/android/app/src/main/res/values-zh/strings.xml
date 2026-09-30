@@ -1885,4 +1885,17 @@
     <string name="provider_refresh_auth_failed_title">登录已失效</string>
     <string name="sub_agent_builtin_description">需要自己的工具循环才能完成的开放式工作：多轮探索代码库或网页、把大量输出提炼成结论，或并行跑几条独立分支。</string>
     <string name="sub_agent_builtin_name">通用子代理</string>
+    <string name="voice_asr_discard">丢弃</string>
+    <string name="voice_asr_failed_message">%1$d 秒的语音未能转写（%2$s）。要重试吗？</string>
+    <string name="voice_asr_failed_title">识别失败</string>
+    <string name="voice_asr_next_model">下一个语音模型</string>
+    <string name="voice_asr_retry">重试</string>
+    <string name="voice_asr_retrying_with">正在使用 %1$s 重试</string>
+    <string name="voice_asr_switch_model">切换模型</string>
+    <string name="voice_asr_switch_model_a11y">使用下一个语音模型重试</string>
+    <string name="voice_asr_system_recognition">系统语音识别</string>
+    <string name="voice_asr_timed_out">语音识别超时</string>
+    <string name="voice_mic_in_use">麦克风正被其他应用占用（如通话或录音），请结束后重试。</string>
+    <string name="voice_mic_unavailable">无法使用麦克风，请重试。</string>
+    <string name="voice_send_still_transcribing">仍在转写，文字出现后再点发送。</string>
 </resources>
