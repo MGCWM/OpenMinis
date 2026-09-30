@@ -103,6 +103,8 @@ object VoiceProviderFactory {
 
             // [T-kimi-oauth] Kimi Coding Plan serves no voice models.
             ProviderType.kimiCode -> null
+            // [T-copilot-provider] Copilot is chat-only — no TTS/STT endpoints.
+            ProviderType.githubCopilot -> null
             // [T-android-provider-type-parity] No voice support for types this
             // build cannot drive.
             ProviderType.antigravity, ProviderType.unsupported -> null

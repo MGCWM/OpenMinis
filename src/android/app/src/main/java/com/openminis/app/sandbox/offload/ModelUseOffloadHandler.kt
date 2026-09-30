@@ -1339,6 +1339,8 @@ class ModelUseOffloadHandler(
             ProviderType.anthropic, ProviderType.xAI, ProviderType.kimiCode,
             // [T-android-provider-type-parity] No image-param hint for types
             // this build cannot drive.
+            // [T-copilot-provider] Copilot exposes no image-output model.
+            ProviderType.githubCopilot,
             ProviderType.antigravity, ProviderType.unsupported, null -> ""
         }
     }

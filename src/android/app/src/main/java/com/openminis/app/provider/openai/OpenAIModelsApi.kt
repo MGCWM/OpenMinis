@@ -32,6 +32,19 @@ object OpenAIModelsApi {
         // [T-android-thinking-level-arch] GPT-5.6 family — Codex OAuth only
         // (not in LLMModel.allOpenAI, matching iOS). sol/terra reach ULTRA,
         // luna reaches MAX (see ThinkingLevelCatalog).
+        // [T-gpt6-astra] GPT-6 Astra — Codex OAuth only, the current flagship,
+        // so it leads the list. Reaches MAX like sol/terra (see
+        // ThinkingLevelCatalog); no effort tiers declared here, same pattern
+        // as the 5.6 family, so the catalog rule sets the ceiling.
+        // [T-gpt6-sol-luna] GPT-6 Sol / Luna — Codex OAuth only, available on
+        // every plan (including free). `supportsReasoning` is EXPLICIT and load
+        // bearing: neither id is in the bundled models.dev snapshot, so nothing
+        // enriches the flag later, and the Responses builder's "Codex OAuth
+        // needs a reasoning object" fallback hard-codes effort "low" — the
+        // exact data gap GPT6AstraReasoningTest exists to pin.
+        LLMModel("gpt-6-sol", "GPT-6 Sol", "OpenAI", supportsReasoning = true),
+        LLMModel("gpt-6-luna", "GPT-6 Luna", "OpenAI", supportsReasoning = true),
+        LLMModel("gpt-6-astra", "GPT-6 Astra", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-5.6-terra", "GPT-5.6 Terra", "OpenAI", supportsReasoning = true),
         LLMModel("gpt-5.6-luna", "GPT-5.6 Luna", "OpenAI", supportsReasoning = true),
@@ -56,7 +69,18 @@ object OpenAIModelsApi {
     ).let {
         AppLogger.info(TAG, "Codex OAuth model list (${it.size} models): ${it.joinToString { m -> m.id }}")
         ModelsDevApi.enrichModels(it)
-    } + listOf(
+    } + codexImageModels()
+
+    /**
+     * The Codex-OAuth image-generation models.
+     *
+     * [T-codex-dynamic-discovery GH#319] Extracted from the inline tail of
+     * [fetchModelsOAuth] so the live-discovery path can append the same set.
+     * Discovery returns CHAT SKUs only — these are not in it — so without a
+     * shared accessor a successful discovery would drop three models that do
+     * work on this auth path. Same list, one definition, two callers.
+     */
+    fun codexImageModels(): List<LLMModel> = listOf(
         // [T-codex-gpt-image2-oauth-android] Special image-generation model on
         // the Codex OAuth path. Appended AFTER enrichModels so its declared
         // image input/output modalities survive (models.dev doesn't know it).
@@ -71,21 +95,29 @@ object OpenAIModelsApi {
             inputModalities = listOf("text", "image"),
             outputModalities = listOf("image"),
         ),
+        // [T-codex-gpt-image25-android] The 2.5 variants. Same Codex OAuth path
+        // as gpt-image-2 above and the same reason for sitting after
+        // enrichModels — models.dev does not carry them either.
+        //
+        // What differs is on the wire: gpt-image-2 is whatever the backend
+        // picks by default for a bare {type:image_generation} tool, while these
+        // two name themselves in that tool object. See
+        // OpenAIProvider.buildCodexImageBody.
+        LLMModel(
+            id = "gpt-image-2.5-sunburst",
+            displayName = "GPT Image 2.5 Sunburst",
+            provider = "OpenAI",
+            inputModalities = listOf("text", "image"),
+            outputModalities = listOf("image"),
+        ),
+        LLMModel(
+            id = "gpt-image-2.5-flare",
+            displayName = "GPT Image 2.5 Flare",
+            provider = "OpenAI",
+            inputModalities = listOf("text", "image"),
+            outputModalities = listOf("image"),
+        ),
     )
-
-    /**
-     * [T-reasoning-effort-endpoint-declared] The wire values `reasoning_effort`
-     * accepts, in the same order [com.openminis.app.provider.thinking.ThinkingRuleResolver]'s
-     * clamp ladder uses.
-     *
-     * Endpoint-declared tiers are filtered through this set before they are
-     * stored, because an unrecognized token is worse than no token at all:
-     * `clampEffort` maps the declared list onto the ladder, and a list made
-     * ONLY of unknown values resolves to an empty ladder — which makes the
-     * clamp pass the request through unclamped, exactly the bug it exists to
-     * prevent.
-     */
-    private val EFFORT_LADDER = setOf("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
     // Chat-capable model prefixes (matching iOS)
     private val chatPrefixes = listOf("gpt-", "o1", "o3", "o4-", "codex-", "chatgpt-")
@@ -148,7 +180,7 @@ object OpenAIModelsApi {
                     if (id.contains(":ft-")) continue
                 }
 
-                val displayName = obj.optString("name", id)
+                val displayName = obj.optString("name", "").ifBlank { LLMModel.modelDisplayName(id) }
                 // Third-party gateways (vLLM, OpenRouter-compat proxies) often
                 // report per-model modalities under `architecture.{input,output}_modalities`
                 // the same way OpenRouter does — pick them up so vision/audio
@@ -161,42 +193,22 @@ object OpenAIModelsApi {
                 val inputModalities = arch?.optJSONArray("input_modalities")?.toStringList().normalizeModalities()
                 val outputModalities = arch?.optJSONArray("output_modalities")?.toStringList().normalizeModalities()
 
-                // [T-reasoning-effort-endpoint-declared] OpenAI-compatible
-                // gateways may publish, right in /v1/models, which effort tiers
-                // a model actually accepts (the wb2api / WorkBuddy panel does):
-                //   "reasoning_supported_efforts": ["low","high","max"]
-                //   "reasoning_default_effort":    "high"
-                //   "supports_reasoning":          true
-                //
-                // This is per-INSTANCE truth: the same model id caps at "high"
-                // behind one route and reaches "max" behind another, and neither
-                // the bundled models.dev snapshot (keyed by exact model id, so
-                // it never matches a prefixed relay id like `cn:foo`) nor the
-                // id-substring catalog in ThinkingLevelCatalog can see that.
-                // The precedence that lets it win lives in
-                // ModelsDevApi.applyDevData.
-                //
-                // Absent on official OpenAI and on every endpoint that does not
-                // publish it, so their parsing stays byte-for-byte unchanged.
-                val declaredTiers = obj.optJSONArray("reasoning_supported_efforts")
-                    ?.toStringList()
-                    ?.map { it.trim().lowercase() }
-                    ?.filter { it in EFFORT_LADDER }
-                    ?.distinct()
-                    ?.takeIf { it.isNotEmpty() }
-                // Only an affirmative answer is taken: a gateway that omits the
-                // flag, or a `false` from one that disagrees with models.dev,
-                // must not switch a working thinking toggle off.
-                val endpointReasons = obj.optBoolean("supports_reasoning", false)
-
                 // T119: known reasoning families (GPT-5.x, o-series, Codex
                 // Mini) get supportsReasoning pre-set to true so the
                 // Thinking pill enables before models.dev enrichment lands
                 // — for brand-new ids (e.g. gpt-5.5) the catalog rarely has
                 // the `reasoning` flag yet, and without this the pill
                 // stays disabled.
+                //
+                // `gpt-6` is anchored alongside `gpt-5` for exactly the reason
+                // 9938d0686 anchored gpt-5 in the first place, one generation
+                // later: the Codex OAuth path stamps gpt-6-astra from its static
+                // list, but an API-key instance discovering it through
+                // /v1/models had no Thinking pill until models.dev catalogued
+                // the id.
                 val idLower = id.lowercase()
                 val knownReasoning = idLower.startsWith("gpt-5") ||
+                    idLower.startsWith("gpt-6") ||
                     idLower.startsWith("o1") ||
                     idLower.startsWith("o3") ||
                     idLower.startsWith("o4") ||
@@ -209,14 +221,7 @@ object OpenAIModelsApi {
                         provider = if (isCustomBase) "Custom" else "OpenAI",
                         inputModalities = inputModalities,
                         outputModalities = outputModalities,
-                        supportsReasoning = if (
-                            endpointReasons || declaredTiers != null || knownReasoning
-                        ) true else null,
-                        // [T-reasoning-effort-endpoint-declared] The tiers this
-                        // instance declared. Non-null here means the picker can
-                        // offer exactly them and the request builder will clamp
-                        // onto them; null keeps the previous fallback chain.
-                        reasoningEffortValues = declaredTiers,
+                        supportsReasoning = if (knownReasoning) true else null,
                     )
                 )
             }
