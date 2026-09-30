@@ -9358,7 +9358,7 @@ class ChatViewModel(
     private fun visionPlaceholderFor(path: String?): String? {
         if (currentModelHasNativeVision) return null
         if (!com.openminis.app.tools.VisionGroupResolver.isConfigured(providerRepository, context)) return null
-        return com.openminis.app.tools.VisionGroupResolver.noVisionImagePlaceholder(path)
+        return com.openminis.app.tools.VisionGroupResolver.noVisionImagePlaceholder(path, visionGroupConfigured = true)
     }
 
     /**

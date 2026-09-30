@@ -42,6 +42,16 @@ data class ThinkingResolveContext(
     val isMistral: Boolean,
     val isDashScope: Boolean,
     /**
+     * [T-android-cerebras-reasoning-400] Endpoint is Cerebras (OpenMinis#361).
+     * Mirrors iOS ThinkingResolveContext.isCerebras.
+     *
+     * Same shape of problem as [isDashScope]: the `*qwen*` rule matches on the
+     * model NAME, and Cerebras re-hosts `qwen-3.8-27b`. Qwen's native
+     * `enable_thinking` is not accepted there — Cerebras' control is root
+     * `reasoning_effort`. Defaults false so every other endpoint is unchanged.
+     */
+    val isCerebras: Boolean = false,
+    /**
      * [OpenMinis#163] Endpoint is xAI's own API (api.x.ai), not a relay that
      * merely serves grok-named models. Scopes the empty-tier skip to the vendor
      * where the 400 was actually observed. Defaults false so existing
