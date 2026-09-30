@@ -958,8 +958,28 @@ class AnthropicProvider(
 
         // Stainless / CLI fingerprint headers — only on OAuth; bump in lockstep
         // with sub2api when the real CLI version moves.
+        //
+        // [T-anthropic-fable51-android] 2.1.195 -> 2.1.251. Anthropic gates
+        // models on this version: below 2.1.251 a claude-fable-5-1 request is
+        // refused with "Claude Code <ver> does not support this model; version
+        // 2.1.251 or newer is required." 2.1.251 is the value CLIProxyAPI
+        // adopted for exactly this reason (router-for-me/CLIProxyAPI#5405,
+        // bumping their defaultClaudeFingerprintUserAgent from 2.1.220), not a
+        // number picked to clear the error message.
+        //
+        // [T-anthropic-opus55-catalog] 2.1.251 -> 2.1.280, for the same class
+        // of gate one generation later: Claude Opus 5.5 is refused below
+        // 2.1.280, and the refusal is a plain 400 that reads like a bad model
+        // id rather than a version problem. The floor only ever rises, so
+        // every model that worked at 2.1.251 (Fable 5.1, Sonnet/Opus 4.x, …)
+        // is unaffected — the gate is "at least", not "exactly".
+        //
+        // The X-Stainless-* values below are deliberately NOT touched: they
+        // describe the SDK/runtime, not the CLI, and the backend pairs UA with
+        // them as one registered client identity. Changing them speculatively
+        // is how a working fingerprint gets broken.
         if (isOAuth) {
-            builder.header("User-Agent", "claude-cli/2.1.195 (external, cli)")
+            builder.header("User-Agent", "claude-cli/2.1.280 (external, cli)")
             builder.header("X-Stainless-Lang", "js")
             builder.header("X-Stainless-Package-Version", "0.106.0")
             builder.header("X-Stainless-OS", "Linux")
@@ -989,7 +1009,7 @@ class AnthropicProvider(
         // [T-provider-custom-user-agent] Applied last so a non-blank override
         // wins over the OAuth claude-cli UA above. null/blank → fall back to
         // the branded Minis UA on the regular apiKey path, but on the OAuth
-        // path keep the claude-cli/2.1.195 fingerprint set at line ~779 (the
+        // path keep the claude-cli/2.1.280 fingerprint set at line ~779 (the
         // Anthropic OAuth backend pairs UA + X-Stainless-* and rejects calls
         // whose UA doesn't match the registered client identity). T-android-
         // default-ua: pass defaultUserAgent=null on OAuth, branded default
