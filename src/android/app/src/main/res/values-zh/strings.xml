@@ -1862,4 +1862,27 @@
     <string name="compact_progress_session">正在压缩（%1$d/%2$d）当前模型 %3$s… %4$d 秒。失败后会试备用或再试当前模型一次。</string>
     <string name="compact_progress_fallback">正在压缩（%1$d/%2$d）备用模型 %3$s… %4$d 秒。再失败将截断更早上文。</string>
     <string name="compact_progress_session_retry">正在压缩（%1$d/%2$d）重试当前模型 %3$s… %4$d 秒。未设置备用。再失败将截断更早上文。</string>
+    <string name="add_provider_subtitle_copilot">使用 GitHub 账号登录 — 非官方接入，风险自负</string>
+    <string name="copilot_disclaimer_accept">我已阅读并接受这些条款</string>
+    <string name="copilot_disclaimer_cancel">取消</string>
+    <string name="copilot_disclaimer_p1">此登录方式未获官方授权。Minis 与 GitHub 无从属关系，未获其认可或支持，本接入也未经 GitHub 审核或批准。</string>
+    <string name="copilot_disclaimer_p2">授权使用的是发给第三方开发者工具的客户端身份，而非 Minis 自己的身份，并依赖未公开用于此用途的服务接口。</string>
+    <string name="copilot_disclaimer_p3">访问权限可能在没有通知的情况下被收回。服务方可随时更改或停用这些接口，导致请求失败或此功能完全停止工作。</string>
+    <string name="copilot_disclaimer_p4">使用本功能可能违反服务方的服务条款，并可能导致限流、暂停，或永久终止你的 Copilot 权益或 GitHub 账号。此类后果作用于你的账号，Minis 无法撤销。</string>
+    <string name="copilot_disclaimer_p5">强烈不建议使用组织、企业或生产账号。请使用一个你能接受失去的个人账号登录。</string>
+    <string name="copilot_disclaimer_p6">你的访问令牌保存在本设备的加密存储中，且只会发送给服务方。Minis 不会收集它，也不会经由我们运营的任何服务器中转。你自行导出的备份可能包含它。</string>
+    <string name="copilot_disclaimer_p7">本功能按“现状”提供，不附带任何形式的担保。继续即表示你已阅读本声明，并完全自行承担这些风险。</string>
+    <string name="copilot_disclaimer_title">关于非官方接入的声明</string>
+    <string name="copilot_login_instructions">打开验证页面并输入此代码，以关联你的 GitHub 账号：</string>
+    <string name="copilot_login_title">使用 GitHub 登录</string>
+    <string name="oauth_completing_sign_in">正在完成登录…</string>
+    <string name="oauth_sign_in_failed">登录失败：%1$s</string>
+    <string name="oauth_status_signing_in">登录中…</string>
+    <string name="oauth_waiting_for_authorization">等待授权… 请在浏览器中完成授权，然后返回 Minis。</string>
+    <string name="provider_oauth_sign_in_again">重新登录</string>
+    <string name="provider_oauth_sign_in_expired_detail">登录已失效，请重新登录以继续使用此服务商。</string>
+    <string name="provider_refresh_auth_failed_body">无法刷新模型列表：该服务商拒绝了已保存的登录凭据。请重新登录后再刷新。</string>
+    <string name="provider_refresh_auth_failed_title">登录已失效</string>
+    <string name="sub_agent_builtin_description">需要自己的工具循环才能完成的开放式工作：多轮探索代码库或网页、把大量输出提炼成结论，或并行跑几条独立分支。</string>
+    <string name="sub_agent_builtin_name">通用子代理</string>
 </resources>
