@@ -2071,4 +2071,5 @@
     <string name="voice_mic_in_use">The microphone is in use by another app (for example a call or a recording). Please try again after it finishes.</string>
     <string name="voice_mic_unavailable">The microphone could not be used. Please try again.</string>
     <string name="voice_send_still_transcribing">Still transcribing. Tap Send again when the text appears.</string>
+    <string name="chat_context_usage_hint">Context %1$s used · %2$s</string>
 </resources>
