@@ -31,6 +31,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ExecutionCoordinator {
 
+    /** [batch-4 / B1] Mounted-session resolution for browser-pool routing. */
+    private val mountedSessionIds = java.util.concurrent.ConcurrentHashMap<String, String>()
+    fun mountedSessionIdFor(sessionId: String): String = mountedSessionIds[sessionId] ?: sessionId
+
+
     private const val TAG = "ExecutionCoordinator"
 
     data class CommandResult(

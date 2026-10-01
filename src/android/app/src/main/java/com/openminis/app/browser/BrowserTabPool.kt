@@ -154,6 +154,14 @@ class BrowserTabPool(private val context: Context) {
         saveState()
     }
 
+    /** [batch-4 / B1] Tear every tab down (deleted session's fallback pool). */
+    fun destroyAllTabs() {
+        val doomed = _tabs.value
+        if (doomed.isEmpty()) return
+        _tabs.value = emptyList()
+        for (tab in doomed) destroyTab(tab)
+    }
+
     private fun destroyTab(tab: Tab) {
         tab.manager.dispose()
         closingTabs.remove(tab.id)

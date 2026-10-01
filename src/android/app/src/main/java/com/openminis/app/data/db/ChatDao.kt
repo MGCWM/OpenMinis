@@ -155,6 +155,15 @@ interface ChatDao {
     @Query("DELETE FROM sessions WHERE id = :id")
     suspend fun deleteSession(id: String)
 
+    // Full-text search across session titles and message content
+    @Query("""
+        SELECT DISTINCT s.* FROM sessions s
+        LEFT JOIN messages m ON m.session_id = s.id
+        WHERE s.title LIKE :pattern OR m.parts_json LIKE :pattern
+        ORDER BY s.updated_at DESC
+    """)
+    suspend fun searchSessions(pattern: String): List<ChatSessionEntity>
+
     /** [T-p1-delegate-task] Children of a parent, for cascade delete. */
     @Query("SELECT id FROM sessions WHERE parent_session_id = :parentId")
     suspend fun childSessionIds(parentId: String): List<String>
