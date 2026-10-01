@@ -184,6 +184,7 @@ object ScheduledAgentRunner {
 
     private suspend fun resolveSessionId(app: MinisApp, task: ScheduledTask): String? {
         return when (val mode = task.targetMode) {
+            is ScheduledTargetMode.ChildOfCurrent -> mode.sessionId
             is ScheduledTargetMode.AppendToSession -> {
                 // Follow-up: the target session must still exist. If the user
                 // deleted it, abort rather than silently spawning a new chat.

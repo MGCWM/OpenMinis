@@ -6501,20 +6501,6 @@ class ChatViewModel(
         )
     }
 
-    // [batch-4 / B1] Session-scoped browser pool (lazily created; adopted by
-    // ChatScreen's browser host when it mounts).
-    private var _browserTabPoolRef: com.openminis.app.browser.BrowserTabPool? = null
-    val browserTabPool: com.openminis.app.browser.BrowserTabPool
-        get() = _browserTabPoolRef ?: synchronized(this) {
-            _browserTabPoolRef ?: com.openminis.app.browser.BrowserTabPool(context).also {
-                it.setSession(activeSessionId)
-                _browserTabPoolRef = it
-            }
-        }
-
-    internal fun adoptBrowserTabPool(pool: com.openminis.app.browser.BrowserTabPool) {
-        _browserTabPoolRef = pool
-    }
 
     /**
      * @param skipContextCheck set by the pre-send context dialog's own actions,

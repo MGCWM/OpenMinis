@@ -146,6 +146,10 @@ fun ScheduledTaskEditScreen(
                 targetKind = TargetKind.FOLLOW_UP
                 targetSessionId = m.sessionId
             }
+            is ScheduledTargetMode.ChildOfCurrent -> {
+                targetKind = TargetKind.FOLLOW_UP
+                targetSessionId = m.sessionId
+            }
             is ScheduledTargetMode.RerunMessage -> {
                 targetKind = TargetKind.RERUN
                 targetSessionId = m.sessionId
