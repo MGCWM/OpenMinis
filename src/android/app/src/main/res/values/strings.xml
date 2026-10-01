@@ -2230,4 +2230,6 @@
     <string name="scheduled_unit_hour">%1$d h</string>
     <string name="scheduled_unit_min">%1$d min</string>
     <string name="scheduled_unit_sec">%1$ds</string>
+    <string name="settings_agents">Sub Agents</string>
+    <string name="settings_agents_subtitle">Named agents the assistant can delegate to</string>
 </resources>

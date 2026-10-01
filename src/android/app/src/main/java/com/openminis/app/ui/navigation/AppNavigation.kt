@@ -90,6 +90,9 @@ object Routes {
     const val SESSION_LIST = "sessions"
     const val CHAT = "chat/{sessionId}"
     const val SETTINGS = "settings"
+    /** [T-sub-agents-v1] Named sub agents the assistant can delegate to. */
+    const val AGENTS = "agents"
+    const val SUB_AGENT_DETAIL = "sub_agent/{agentId}"
     const val PROVIDER_LIST = "providers"
     const val ADD_PROVIDER = "add_provider"
     const val PROVIDER_DETAIL = "provider/{instanceId}"
@@ -596,6 +599,7 @@ fun AppNavigation(
                 onSkillsClick = { navController.safeNavigate(Routes.SKILLS) },
                 onTerminalClick = { navController.safeNavigate(Routes.terminal()) },
                 onMemoryClick = { navController.safeNavigate(Routes.MEMORY) },
+                onAgentsClick = { navController.safeNavigate(Routes.AGENTS) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
                 onSoulClick = { navController.safeNavigate(Routes.SOUL) },
                 onPermissionsClick = { navController.safeNavigate(Routes.PERMISSIONS) },
@@ -607,6 +611,23 @@ fun AppNavigation(
                 onMountedFoldersClick = { navController.safeNavigate(Routes.MOUNTED_FOLDERS) },
                 onSharedFoldersClick = { navController.safeNavigate(Routes.SHARED_FOLDERS) },
                 onToolLimitsClick = { navController.safeNavigate(Routes.TOOL_LIMITS) },
+            )
+        }
+
+        composable(Routes.AGENTS) {
+            com.openminis.app.ui.settings.SubAgentsScreen(
+                onBack = { navController.safePopBackStack() },
+                onOpen = { id -> navController.safeNavigate("sub_agent/$id") },
+            )
+        }
+
+        composable(
+            route = Routes.SUB_AGENT_DETAIL,
+            arguments = listOf(navArgument("agentId") { type = NavType.StringType }),
+        ) { entry ->
+            com.openminis.app.ui.settings.SubAgentDetailScreen(
+                agentId = entry.arguments?.getString("agentId").orEmpty(),
+                onBack = { navController.safePopBackStack() },
             )
         }
 
