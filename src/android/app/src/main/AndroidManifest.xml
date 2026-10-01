@@ -20,6 +20,9 @@
          policy, not an OS runtime check, and Minis ships as a sideload.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- [T-android-backup-fgs] BackupForegroundService is a dataSync service:
+         required on Android 14+ to call startForeground with that type. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- T50: PARTIAL_WAKE_LOCK held by AgentForegroundService while sessions
          are streaming so Doze + OEM CPU throttling don't stall long shell
          tools after screen-off. -->
@@ -148,6 +151,13 @@
         <intent>
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="mailto" />
+        </intent>
+        <!-- [T-android-tts-engine-visibility] A user-installed TTS engine
+             (Sogou, iFlytek, RHVoice…) is INVISIBLE under Android 11+
+             package visibility without this; android-speak and read-aloud's
+             system fallback would go silent. -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
     </queries>
 
@@ -548,6 +558,13 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/minis_accessibility_service" />
         </service>
+
+        <!-- [T-android-backup-fgs] Backup progress while the screen is away:
+             started by BackupRunController, stops itself when the run ends. -->
+        <service
+            android:name=".service.BackupForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
     </application>
 </manifest>
