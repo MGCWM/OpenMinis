@@ -223,6 +223,13 @@ object PRootKernel {
      * `/var/minis/{memory,skills,shared}/...` without needing PRoot to be
      * booted or any shell to have started. Safe to call repeatedly.
      */
+    /** True for `/var/minis/<attachments|offloads|workspace|browser>` and below. */
+    fun isPerSessionPath(linuxPath: String): Boolean {
+        if (!linuxPath.startsWith("/var/minis/")) return false
+        val sub = linuxPath.removePrefix("/var/minis/").substringBefore('/')
+        return sub in perSessionSubdirs
+    }
+
     fun registerGlobalBindMounts(context: Context) {
         val globalBase = File(context.filesDir, "minis-global")
         // [T-mcp-integration-android] mcp-servers is global (like memory/skills):
