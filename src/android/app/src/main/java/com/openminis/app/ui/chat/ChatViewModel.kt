@@ -6446,6 +6446,32 @@ class ChatViewModel(
 
     fun sendMessage(text: String) = sendMessage(text, skipContextCheck = false)
 
+    // [T-android-submit-outcome] Minimal headless adapter (batch 4). Mirrors
+    // the outcome contract HeadlessChatRunner expects. `prefill` is accepted
+    // for parity; running it as the loop's first turn arrives with the
+    // scheduled-task re-merge.
+    sealed class SubmitOutcome {
+        /** No loop was running; a new turn started. */
+        object Sent : SubmitOutcome()
+        /** A loop was running; the prompt is queued and drains when it ends. */
+        object Queued : SubmitOutcome()
+        /** Auto-compact is on and the context was near capacity. */
+        object Compacting : SubmitOutcome()
+        /** Refused. `reason` is a stable snake_case token for scripts/RPC. */
+        data class Rejected(val reason: String) : SubmitOutcome()
+    }
+
+    internal fun submitPrompt(
+        text: String,
+        prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
+    ): SubmitOutcome {
+        if (isCompacting.value) return SubmitOutcome.Compacting
+        if (activeEntryId.value == null) return SubmitOutcome.Rejected("no_provider_resolved")
+        val wasStreaming = isStreaming.value
+        sendMessage(text)
+        return if (wasStreaming) SubmitOutcome.Queued else SubmitOutcome.Sent
+    }
+
     /**
      * @param skipContextCheck set by the pre-send context dialog's own actions,
      *   which have already made the compact decision. Without it the re-entrant

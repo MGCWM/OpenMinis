@@ -1190,6 +1190,23 @@ class SkillRepository(private val context: Context) {
         loadAll()
     }
 
+    /**
+     * [T-android-skill-reload-requests] Conflated background reload request
+     * (MinisApp drives this on foreground). One in-flight scan at a time;
+     * repeats while one is pending are dropped, so a shell command that
+     * never touched /var/minis/skills costs nothing on the main thread.
+     */
+    private val reloadPending = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val reloadScope =
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
+    fun requestReload(reason: String, force: Boolean = false) {
+        if (reloadPending.getAndSet(true)) return
+        reloadScope.launch {
+            try { reloadFromDisk() } finally { reloadPending.set(false) }
+        }
+    }
+
     // -- Internal --
 
     private fun loadAll() {

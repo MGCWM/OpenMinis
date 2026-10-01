@@ -39,6 +39,11 @@ class BrowserTabPool(private val context: Context) {
         private const val MAX_GLOBAL_TABS = 6
         // Access only on Main. Weak keys do not become an additional pool owner.
         private val pools = java.util.WeakHashMap<BrowserTabPool, Unit>()
+
+        /** [T-android-trimmemory-browser] Trim idle tabs across every live pool. */
+        fun handleMemoryPressure() {
+            synchronized(pools) { for (p in pools.keys.toList()) p.trimIdleTabs() }
+        }
         private const val IDLE_CHECK_INTERVAL_MS = 60_000L  // 60 seconds
         /** Default idle timeout — matches iOS BrowserTabPool.idleTimeout (15 minutes). */
         const val DEFAULT_IDLE_TIMEOUT_MINUTES = 15

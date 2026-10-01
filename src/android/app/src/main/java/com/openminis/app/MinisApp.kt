@@ -1101,8 +1101,8 @@ class MinisApp : Application(), ImageLoaderFactory {
         // failing a running task is a worse outcome than the memory it holds,
         // and the registry can still preempt it later if pressure persists.
         runCatching {
-            com.openminis.app.browser.BrowserTabPoolRegistry.handleMemoryPressure()
-        }.onFailure { Log.w("MinisApp", "BrowserTabPoolRegistry.handleMemoryPressure failed: ${it.message}") }
+            com.openminis.app.browser.BrowserTabPool.handleMemoryPressure()
+        }.onFailure { Log.w("MinisApp", "BrowserTabPool.handleMemoryPressure failed: ${it.message}") }
 
         // [T-android-trimmemory-vmstore] Cached ChatViewModels are the other
         // large reclaimable allocation: each holds a session's messages,

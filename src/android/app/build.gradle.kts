@@ -42,6 +42,12 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // DEV_TOOLS gates the on-device developer tooling (debug server,
+        // LLM request log, probe markers). True for `debug` AND `perf`,
+        // false for `release`. Separate from BuildConfig.DEBUG so a
+        // non-debuggable build can still carry the tooling.
+        buildConfigField("boolean", "DEV_TOOLS", "false")
+
         // System prompt prefix required by Anthropic for Claude Code OAuth
         // credentials. Empty in the public mirror (see provider-customization.properties).
         buildConfigField(
@@ -88,6 +94,20 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            buildConfigField("boolean", "DEV_TOOLS", "true")
+        }
+        // `perf`: debug minus android:debuggable — profileable/AOT-compilable
+        // like release, but keeps the debug server and probes (DEV_TOOLS).
+        // Same debug signing key, so it installs in place.
+        create("perf") {
+            initWith(getByName("debug"))
+            isDebuggable = false
+            isProfileable = true
+            matchingFallbacks += listOf("debug")
+            buildConfigField("boolean", "DEV_TOOLS", "true")
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
