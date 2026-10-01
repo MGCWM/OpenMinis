@@ -357,6 +357,8 @@ object ChatViewModelStore {
     @JvmOverloads
     fun ownerFor(sessionId: String, kind: PoolKind = PoolKind.NORMAL): ViewModelStoreOwner {
         val key = resolveKey(sessionId)
+        lastAccess[key] = ++generation
+        scheduleTrim()
         val existing = stores.remove(key)
         val store = if (existing != null) {
             // Re-insert so LinkedHashMap's iteration order is least-recently-
@@ -374,10 +376,6 @@ object ChatViewModelStore {
                 "allocate store for $key kind=${poolKinds[key]} " +
                     "(total=${stores.size + 1}, pool=${poolSize(poolKinds[key]) + 1})",
             )
-        lastAccess[key] = ++generation
-        scheduleTrim()
-        val store = stores.getOrPut(key) {
-            Log.d(TAG, "allocate store for $key (total=${stores.size + 1})")
             ViewModelStore()
         }
         stores[key] = store
@@ -526,8 +524,6 @@ object ChatViewModelStore {
         // [T-android-vm-store-child-tag-survives-evict] Forget the tag even
         // when the store was already evicted: a CHILD tag outlives eviction.
         poolKinds.remove(key)
-        stores.remove(key)?.let {
-            it.clear()
         models.remove(key)
         lastAccess.remove(key)
         mounted.remove(key)
