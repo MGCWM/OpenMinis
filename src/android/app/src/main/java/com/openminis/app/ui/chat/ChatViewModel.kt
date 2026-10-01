@@ -6472,6 +6472,35 @@ class ChatViewModel(
         return if (wasStreaming) SubmitOutcome.Queued else SubmitOutcome.Sent
     }
 
+    // [batch-4 / B1] Helper-mode plumbing (populated by HelperRunner when this
+    // VM is a sub agent's child; null for ordinary chats).
+    internal var helperConfig: com.openminis.app.agent.jobs.HelperConfig? = null
+    internal val isHelper: Boolean get() = helperConfig != null
+    /** Workspace/tool session a helper writes through — the parent's. */
+    internal val fsSessionId: String get() = helperConfig?.parentSessionId ?: activeSessionId
+
+    /** [T-android-usage-capsule] Per-message "usage capsule revealed" state. */
+    internal val _revealedUsageIds = MutableStateFlow<Set<String>>(emptySet())
+    val revealedUsageIds: StateFlow<Set<String>> = _revealedUsageIds.asStateFlow()
+
+    fun toggleUsageCapsule(messageId: String) {
+        val cur = _revealedUsageIds.value
+        _revealedUsageIds.value = if (messageId in cur) cur - messageId else cur + messageId
+    }
+
+    /** [T-android-vm-store-leak] Work that must block cache eviction. */
+    fun hasWorkInFlight(): Boolean {
+        val registry = com.openminis.app.agent.jobs.AgentJobRegistry
+        val agentWork = setOf(activeSessionId).filter { it.isNotEmpty() }
+            .any { registry.hasAgentWork(it) }
+        return com.openminis.app.ui.chat.EvictionGuard.hasWorkInFlight(
+            isStreaming = isStreaming.value,
+            streamJobActive = isStreaming.value,
+            hasAgentWork = agentWork,
+            hasQueuedPrompts = false, // queue telemetry arrives with the chat-core merge
+        )
+    }
+
     /**
      * @param skipContextCheck set by the pre-send context dialog's own actions,
      *   which have already made the compact decision. Without it the re-entrant

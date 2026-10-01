@@ -3671,6 +3671,9 @@ fun ChatScreen(
                     is FlatChatItem.AssistantThinking -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantToolUse -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantInfo -> false  // system rows never grayed
+                    is FlatChatItem.AgentCallbackCard -> grayedMap[originalMessageId(message.id)] == true
+                    is FlatChatItem.ScheduledTaskCardItem -> grayedMap[originalMessageId(message.id)] == true
+                    is FlatChatItem.AssistantUsage -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantTyping -> false
                     is FlatChatItem.AssistantError -> grayedMap[originalMessageId(messageId)] == true
                     is FlatChatItem.AssistantLegacyContent -> grayedMap[originalMessageId(messageId)] == true
@@ -4057,6 +4060,21 @@ fun ChatScreen(
                                 ),
                         ) {
                         when (item) {
+                            // [batch-4 / B1] Card rows for scheduled fires and
+                            // helper callbacks; usage capsule reveals on tap
+                            // (full blank-tap wiring lands with the chat-core
+                            // merge).
+                            is FlatChatItem.ScheduledTaskCardItem -> ScheduledTaskCard(
+                                marker = item.marker,
+                                hostSessionId = sessionId,
+                            )
+                            is FlatChatItem.AgentCallbackCard -> AgentCallbackCard(
+                                callback = item.callback,
+                                onTap = { /* callback detail sheet: chat-core merge */ },
+                            )
+                            is FlatChatItem.AssistantUsage -> if (
+                                originalMessageId(item.messageId) in viewModel.revealedUsageIds.value
+                            ) UsageCapsule(item.usage, item.completedAt)
                             is FlatChatItem.UserBubble -> {
                                 // User bubbles intentionally don't register
                                 // MinisTextKit shards — long-press on a user

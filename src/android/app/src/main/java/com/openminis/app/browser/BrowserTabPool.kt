@@ -34,6 +34,8 @@ import java.util.concurrent.ConcurrentHashMap
 class BrowserTabPool(private val context: Context) {
 
     companion object {
+        /** [T-android-agent-tab-quota] Extra tabs an agent sidebar session may open. */
+        const val AGENT_TAB_QUOTA = 2
         private const val TAG = "BrowserTabPool"
         private const val MAX_TABS = 5
         private const val MAX_GLOBAL_TABS = 6
