@@ -1963,4 +1963,5 @@
     <string name="scheduled_unit_hour">%1$d 小時</string>
     <string name="scheduled_unit_min">%1$d 分鐘</string>
     <string name="scheduled_unit_sec">%1$d 秒</string>
+    <string name="agent_model_group_unavailable">綁定的模型群組無法使用——已改用目前對話的模型</string>
 </resources>

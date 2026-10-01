@@ -416,6 +416,9 @@ class ChatRepository(internal val dao: ChatDao) {
         return older.drop(1).firstNotNullOfOrNull { SessionSearch.searchSnippet(it.partsJson, query) }
     }
 
+    suspend fun searchSessions(query: String): List<ChatSessionEntity> =
+        dao.searchSessions("%$query%")
+
     fun observeMessages(sessionId: String): Flow<List<MessageEntity>> =
         dao.observeMessages(sessionId)
 
