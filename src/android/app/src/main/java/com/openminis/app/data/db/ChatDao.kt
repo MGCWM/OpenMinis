@@ -88,7 +88,7 @@ data class SessionTailRow(
  * while looking for the current turn's assistant row (see
  * [ChatDao.messageHeadNewestFirst]).
  */
-data class MessageHeadRow(
+data class CurrentTurnRow(
     val id: String,
     val role: String,
     @ColumnInfo(name = "parts_json") val partsJson: String,
@@ -500,7 +500,7 @@ interface ChatDao {
         WHERE session_id = :sessionId
         ORDER BY sort_order DESC LIMIT 1 OFFSET :offset
     """)
-    suspend fun messageHeadNewestFirst(sessionId: String, offset: Int): MessageHeadRow?
+    suspend fun messageHeadNewestFirst(sessionId: String, offset: Int): CurrentTurnRow?
 
     // Pinned sessions first, then by updated_at
     @Query("SELECT * FROM sessions ORDER BY CASE WHEN pinned_at IS NOT NULL THEN 0 ELSE 1 END, pinned_at DESC, updated_at DESC")

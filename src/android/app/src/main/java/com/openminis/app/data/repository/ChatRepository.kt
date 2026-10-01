@@ -6,6 +6,7 @@ import com.openminis.app.data.db.ChatSessionEntity
 import com.openminis.app.data.db.FolderEntity
 import com.openminis.app.data.db.MessageEntity
 import com.openminis.app.data.db.MessageHeadRow
+import com.openminis.app.data.db.CurrentTurnRow
 import com.openminis.app.data.model.ModelAttributionSnapshot
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
@@ -1030,7 +1031,7 @@ class ChatRepository(internal val dao: ChatDao) {
          * [persistTurnError] walk over rows given newest-first: the id to stamp,
          * or null when the current turn has no assistant row (→ carrier).
          */
-        internal fun currentTurnErrorRowId(rowsNewestFirst: List<MessageHeadRow>): String? {
+        internal fun currentTurnErrorRowId(rowsNewestFirst: List<CurrentTurnRow>): String? {
             for (row in rowsNewestFirst) {
                 when (errorTargetStep(row.role, row.partsJson)) {
                     ErrorTargetStep.TARGET -> return row.id
