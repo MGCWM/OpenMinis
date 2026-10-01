@@ -145,7 +145,8 @@ jobs:
             --tests 'com.openminis.app.browser.ScreenshotBudgetTest' \
             --tests 'com.openminis.app.browser.BrowserActionInputTest' \
             --tests 'com.openminis.app.auth.*' \
-            --tests 'com.openminis.app.speech.*'
+            --tests 'com.openminis.app.speech.*' \
+            --tests 'com.openminis.app.data.db.*'
 
       - name: assembleRelease
         working-directory: src/android
