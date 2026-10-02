@@ -1,5 +1,6 @@
 package com.openminis.app.browser
 
+import org.json.JSONObject
 /**
  * Injectable JavaScript for browser_use actions.
  * Each function returns a self-executing IIFE that JSON.stringify()s the result.
@@ -586,4 +587,3 @@ object BrowserUseJS {
         """.trimIndent()
     }
 }
-import org.json.JSONObject
