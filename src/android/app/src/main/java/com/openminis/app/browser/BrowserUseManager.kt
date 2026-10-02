@@ -1250,52 +1250,9 @@ class BrowserUseManager(
         var savedW = 0
         var savedH = 0
 
-        if (fullPage) {
-            // Measure full document height in CSS pixels.
-            val cssScrollHeight = evaluateJavascript("document.documentElement.scrollHeight").let {
-                it.trim().toIntOrNull() ?: 0
-            }
-            val density = webView.resources.displayMetrics.density
-            val scrollHeightPx = if (cssScrollHeight > 0) {
-                (cssScrollHeight * density).toInt()
-            } else {
-                withContext(Dispatchers.Main) { webView.height }
-            }
-            originalHeightPx = scrollHeightPx
-            val cappedPx = scrollHeightPx.coerceAtMost(MAX_FULL_PAGE_HEIGHT_PX)
-            truncated = scrollHeightPx > MAX_FULL_PAGE_HEIGHT_PX
-
-            // Eagerize lazy images and wait two RAFs so layout settles before capture.
-            try {
-                evaluateJavascript(
-                    """
-                    (async () => {
-                        document.querySelectorAll('img[loading="lazy"]').forEach(i => i.loading = 'eager');
-                        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-                        return 'ok';
-                    })()
-                    """.trimIndent()
-                )
-            } catch (_: Exception) { /* best-effort */ }
-            delay(50)
-
-            // Snapshot current viewport, stretch to cssScrollHeight, capture, restore.
-            val applied = lastAppliedViewport ?: currentProfile.viewportSize
-            savedW = applied.first
-            savedH = applied.second
-            val cssCappedHeight = (cappedPx / density).toInt().coerceAtLeast(savedH)
-            withContext(Dispatchers.Main) {
-                applyViewport(savedW, cssCappedHeight)
-            }
-            didStretch = true
-            // [T-android-browser-fullpage-repaint] Give the renderer a chance
-            // to paint the area the stretch just exposed. applyViewport only
-            // measure/layouts the view; without a gap the capture below runs
-            // in the same main-thread pass and can read back a region that has
-            // never been drawn, which is why --full-page shots came out
-            // partially blank below the first viewport.
-            delay(FULL_PAGE_REPAINT_DELAY_MS)
-            Log.i(TAG, "full_page stretch: ${savedW}x$cssCappedHeight CSS (px=$cappedPx, original=$scrollHeightPx, truncated=$truncated)")
+        // Measure full document height in CSS pixels.
+        val cssScrollHeight = evaluateJavascript("document.documentElement.scrollHeight").let {
+            it.trim().toIntOrNull() ?: 0
         }
         val density = webView.resources.displayMetrics.density
         val scrollHeightPx = if (cssScrollHeight > 0) {
@@ -1332,6 +1289,13 @@ class BrowserUseManager(
             applyViewport(savedW, cssCappedHeight)
         }
         didStretch = true
+        // [T-android-browser-fullpage-repaint] Give the renderer a chance to
+        // paint the area the stretch just exposed. applyViewport only
+        // measure/layouts the view; without a gap the capture below runs
+        // in the same main-thread pass and can read back a region that has
+        // never been drawn, which is why --full-page shots came out
+        // partially blank below the first viewport.
+        delay(FULL_PAGE_REPAINT_DELAY_MS)
         Log.i(TAG, "full_page stretch: ${savedW}x$cssCappedHeight CSS (px=$cappedPx, original=$scrollHeightPx, truncated=$truncated)")
 
         val bitmap = try {
@@ -1339,7 +1303,7 @@ class BrowserUseManager(
             captureWebViewBitmap(gpu = !didStretch)
         } finally {
             if (didStretch) {
-                withContext(Dispatchers.Main) {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
                     applyViewport(savedW, savedH)
                 }
             }
