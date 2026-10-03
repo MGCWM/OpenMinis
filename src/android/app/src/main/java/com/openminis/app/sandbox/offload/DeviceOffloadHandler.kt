@@ -150,15 +150,6 @@ class DeviceOffloadHandler(private val context: Context) : NativeOffloadHandler 
     private fun dirSize(dir: File): Long =
         com.openminis.app.data.session.SessionStorage.directorySize(dir)
 
-    /** Symlinks are skipped so a link out of the tree is not counted at target size. */
-    private fun isSymlink(file: File): Boolean =
-        try {
-            java.nio.file.Files.isSymbolicLink(file.toPath())
-        } catch (_: Throwable) {
-            false
-        }
-
-
     companion object {
         private const val HELP = """android-device — device model, OS, battery, storage (JSON)
 

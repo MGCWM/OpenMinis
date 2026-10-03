@@ -261,13 +261,6 @@ class RootfsManager private constructor(private val context: Context) {
     private fun calculateDirSize(dir: File): Long =
         com.openminis.app.data.session.SessionStorage.directorySize(dir)
 
-    private fun isSymlink(file: File): Boolean =
-        try {
-            java.nio.file.Files.isSymbolicLink(file.toPath())
-        } catch (_: Throwable) {
-            false
-        }
-
     /**
      * Ensure session-specific directories exist on the host filesystem.
      */
