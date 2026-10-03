@@ -260,8 +260,8 @@
     <string name="soul_body_placeholder">描述 Agent 說話的口吻、思考方式與行為…</string>
     <string name="soul_length_indicator">%1$d 個字</string>
     <string name="soul_count_zero">0 個字</string>
-    <string name="soul_count_chars">%1$d / %2$d 個字</string>
-    <string name="soul_count_words">%1$d / %2$d 個單字</string>
+    <string name="soul_count_chars">%1$d 個字</string>
+    <string name="soul_count_words">%1$d 個單字</string>
     <string name="soul_over_limit_chinese">已超出上限：%1$d / %2$d 個字。中文不超過 %2$d 個字，或英文不超過 %3$d 個單字。</string>
     <string name="soul_over_limit_english">已超出上限：%1$d / %2$d 個單字。中文不超過 %3$d 個字，或英文不超過 %2$d 個單字。</string>
     <string name="soul_save">儲存</string>

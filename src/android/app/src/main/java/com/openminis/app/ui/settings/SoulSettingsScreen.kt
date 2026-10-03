@@ -45,7 +45,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,7 +70,6 @@ import com.openminis.app.R
 import com.openminis.app.ui.components.MinisButton
 import com.openminis.app.ui.components.MinisOutlinedButton
 import com.openminis.app.ui.components.MinisTextButton
-import com.openminis.app.agent.SoulBodyLimitCheck
 import com.openminis.app.agent.PersonaImportError
 import com.openminis.app.agent.PersonaImportResult
 import com.openminis.app.agent.PersonaPromptEntry
@@ -243,15 +241,6 @@ fun SoulSettingsScreen(
         loaded = true
     }
 
-    // Language-aware length check used by both the editor counter and the
-    // Save button's enabled state. See [SoulStore.isOverLimit] for the rule.
-    // [T-soul-limit] The personality body is edited on the prompt page now;
-    // keep the guard by deriving the current body from the snapshot.
-    val bodyForLimit = pendingRestoreBody ?: baseline?.body.orEmpty()
-    val bodyLimitCheck by remember(bodyForLimit) {
-        derivedStateOf { SoulStore.isOverLimit(bodyForLimit) }
-    }
-
     val currentFile = SoulFile(
         metadata = SoulMetadata(
             name = name.ifBlank { SoulMetadata.DEFAULT.name },
@@ -317,7 +306,7 @@ fun SoulSettingsScreen(
             // (long) prompt editor to the bottom.
             MinisTextButton(
                 onClick = save,
-                enabled = loaded && isDirty && !bodyLimitCheck.isOverLimit,
+                enabled = loaded && isDirty,
             ) { Text(stringResource(R.string.soul_save)) }
         },
     ) {
@@ -794,9 +783,10 @@ private fun SoulEmojiPickerSheet(
     }
 }
 
-/// Render the within-budget counter — picks the CJK character unit vs "words" depending on
-/// the same CJK ratio rule that decides which cap applies. Standalone
-/// helper so it stays out of the Composable hot-path's expression budget.
+/// Render the body-size counter — picks the CJK character unit vs "words"
+/// with the same CJK ratio rule (the cap itself is gone; this is purely
+/// informational). Standalone helper so it stays out of the Composable
+/// hot-path's expression budget.
 @Composable
 internal fun soulBodyCountTextAndroid(body: String): String {
     val trimmed = body.trim()
@@ -819,10 +809,10 @@ internal fun soulBodyCountTextAndroid(body: String): String {
     val ratio = if (total > 0) cjk.toDouble() / total else 0.0
     return if (ratio > SoulStore.CJK_RATIO_THRESHOLD) {
         val chars = trimmed.codePointCount(0, trimmed.length)
-        stringResource(R.string.soul_count_chars, chars, SoulStore.CHINESE_CHAR_LIMIT)
+        stringResource(R.string.soul_count_chars, chars)
     } else {
         val words = trimmed.split(Regex("\\s+")).count { it.isNotEmpty() }
-        stringResource(R.string.soul_count_words, words, SoulStore.ENGLISH_WORD_LIMIT)
+        stringResource(R.string.soul_count_words, words)
     }
 }
 

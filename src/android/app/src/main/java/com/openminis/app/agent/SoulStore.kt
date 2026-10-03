@@ -184,14 +184,9 @@ object SoulMDParser {
 }
 
 /**
- * Result of a SOUL.md body length check. The hard limit depends on what
- * language the body is written in — Chinese / Japanese / Korean text is
- * information-dense per character so the cap is in chars, while English /
- * other Latin-alphabet text is capped by word count.
- *
- * Mirrors `SoulStore.isOverLimit(_:)` on iOS. The associated value carries
- * the observed magnitude and the matching cap so callers can surface a
- * precise "your body is N / max M" message.
+ * Result of a SOUL.md body length check. [T-soul-limit-removed 2026-10-03]
+ * Kept for API stability after the cap was removed — [SoulStore.isOverLimit]
+ * now always returns [Ok]; the over-limit variants never occur.
  */
 sealed class SoulBodyLimitCheck {
     object Ok : SoulBodyLimitCheck()
@@ -241,89 +236,25 @@ object SoulStore {
     fun iconFileLocation(context: Context): File =
         File(File(context.filesDir, MEMORY_SUBDIR), SoulIcon.SIDECAR_NAME)
 
-    // -- Body length rules (language-aware) ----------------------------
+    // -- Body length rules (cap removed) -------------------------------
     //
-    // The personality body has a hard cap applied at every write surface
-    // (Settings UI Save button, minis-config writer, and the
-    // prompt-build-time fallback in `SystemPromptBuilder`). The cap is
-    // language-dependent: CJK text is information-dense per character so
-    // 1600 chars is the limit; Latin / mixed text gets a 1000-word cap.
-    // (T-soul-body-limit-2000 — both axes doubled from 800 / 500 to align
-    //  with iOS bumping its single 1000→2000 token cap.)
+    // [T-soul-limit-removed 2026-10-03] The language-aware body cap is gone
+    // (user decision; mirrors the tall line's 1.35 change). `isOverLimit` is
+    // kept as an always-passing shim so existing call sites stay
+    // source-compatible; the prompt builder now injects the body verbatim at
+    // any length, Settings no longer gates Save, and the minis-config writer
+    // accepts any length.
     //
-    // CJK ratio of 30% switches the rule. A body whose CJK glyphs make up
-    // more than 30% of all unicode code points is treated as CJK-leaning
-    // and counted by character; anything at-or-below 30% is counted by
-    // word. 30% is the lowest watermark at which Chinese / Japanese
-    // clearly dominates — high enough to ignore stray CJK quotes or
-    // proper nouns in an English document, low enough that a majority-CJK
-    // paragraph with a few inline English terms still counts as CJK.
+    // CJK_RATIO_THRESHOLD survives for the editor's counter, which picks the
+    // display unit (CJK chars vs Latin words) with the same 30 % rule.
 
     const val CJK_RATIO_THRESHOLD: Double = 0.3
-    const val CHINESE_CHAR_LIMIT: Int = 1600
-    const val ENGLISH_WORD_LIMIT: Int = 1000
 
     /**
-     * Classify [body] under the language-aware length rules above. Empty
-     * / whitespace-only bodies always return [SoulBodyLimitCheck.Ok].
+     * No-op since the cap was removed: every body — including empty or
+     * whitespace-only — reports [SoulBodyLimitCheck.Ok].
      */
-    fun isOverLimit(body: String): SoulBodyLimitCheck {
-        val trimmed = body.trim()
-        if (trimmed.isEmpty()) return SoulBodyLimitCheck.Ok
-
-        var cjk = 0
-        var total = 0
-        var i = 0
-        while (i < trimmed.length) {
-            val cp = trimmed.codePointAt(i)
-            total += 1
-            if (isCJKCodePoint(cp)) cjk += 1
-            i += Character.charCount(cp)
-        }
-        val ratio = if (total > 0) cjk.toDouble() / total else 0.0
-        return if (ratio > CJK_RATIO_THRESHOLD) {
-            // Code-point count — closest analogue to iOS grapheme cluster
-            // count for the CJK ranges we care about (no combining marks
-            // / no flag emojis in Han/Kana/Hangul). Bytes / UTF-16 code
-            // units would over-count surrogate-pair CJK extensions.
-            val chars = trimmed.codePointCount(0, trimmed.length)
-            if (chars > CHINESE_CHAR_LIMIT) SoulBodyLimitCheck.OverLimitChinese(chars, CHINESE_CHAR_LIMIT)
-            else SoulBodyLimitCheck.Ok
-        } else {
-            // Whitespace-delimited word count. `split(Regex("\\s+"))` on
-            // a trimmed string collapses consecutive whitespace into a
-            // single delimiter.
-            val words = trimmed.split(Regex("\\s+")).count { it.isNotEmpty() }
-            if (words > ENGLISH_WORD_LIMIT) SoulBodyLimitCheck.OverLimitEnglish(words, ENGLISH_WORD_LIMIT)
-            else SoulBodyLimitCheck.Ok
-        }
-    }
-
-    /**
-     * True if [cp] belongs to any CJK Unified Ideograph or Kana / Hangul
-     * range. Covers Chinese (Simplified + Traditional), Japanese
-     * (Hiragana + Katakana + Kanji shared with CJK Unified), and Korean
-     * (Hangul Syllables + Jamo). Wider than just U+4E00–U+9FFF so the
-     * extensions and Hangul also count toward the ratio.
-     */
-    private fun isCJKCodePoint(cp: Int): Boolean {
-        // CJK Unified Ideographs + Ext A
-        if (cp in 0x4E00..0x9FFF) return true
-        if (cp in 0x3400..0x4DBF) return true
-        // CJK Unified Ideographs Ext B, C/D/E/F, G/H
-        if (cp in 0x20000..0x2A6DF) return true
-        if (cp in 0x2A700..0x2EBEF) return true
-        if (cp in 0x30000..0x323AF) return true
-        // Hiragana, Katakana, Katakana Phonetic Extensions
-        if (cp in 0x3040..0x309F) return true
-        if (cp in 0x30A0..0x30FF) return true
-        if (cp in 0x31F0..0x31FF) return true
-        // Hangul Syllables, Jamo, Compatibility Jamo
-        if (cp in 0xAC00..0xD7AF) return true
-        if (cp in 0x1100..0x11FF) return true
-        if (cp in 0x3130..0x318F) return true
-        return false
-    }
+    fun isOverLimit(body: String): SoulBodyLimitCheck = SoulBodyLimitCheck.Ok
 
     /**
      * The verbatim default file content used both for first-run
@@ -606,20 +537,6 @@ object SystemPromptBuilder {
 
         val trimmed = resolved.body.trim()
         if (trimmed.isEmpty()) {
-            return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
-        }
-
-        // Reject (NOT truncate) bodies that exceed the language-aware
-        // limit. The old head/tail truncation silently dropped half the
-        // user's text — falling back to identity-only is the safer
-        // signal: the user notices the personality isn't taking effect,
-        // opens Settings, and sees the same red over-limit warning the
-        // Save button surfaces. Write paths already reject over-limit;
-        // this branch only triggers for an on-disk file written before
-        // this rule existed (or via shell / another device).
-        val check = SoulStore.isOverLimit(trimmed)
-        if (check.isOverLimit) {
-            AppLogger.warning(TAG, "personality body is over the language-aware limit ($check) — falling back to identity-only system prompt.")
             return identityTrimmed + styleBlock(style) + "\n\n" + soulEditHint + "\n\n"
         }
 
