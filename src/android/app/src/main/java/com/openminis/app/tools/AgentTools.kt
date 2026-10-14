@@ -141,35 +141,39 @@ object AgentTools {
             "Sub-resources (JS, CSS, images, fonts) referenced via minis:// absolute paths or relative paths within HTML pages resolve correctly. " +
             "Use navigate to open URLs, screenshot to see the page (returns an image), " +
             "click/type to interact with elements, get_text/get_readable to extract content, " +
+            "Selectors accept CSS, or smart forms: text=<visible label> (substring; quote for exact), aria-label=<label>, role=button[name=<label>] — these also search Shadow DOM and same-origin iframes (cross-origin iframe contents are unreachable; use coordinate_x/y to click inside them). " +
+            "Use press_key to inject a REAL key event (Enter/Escape/Tab/arrows/F1-12/letters/digits; combos like 'ctrl+Enter', 'shift+Tab') — optionally focus 'selector' first. " +
             "scroll to navigate long pages, scroll_and_collect to scroll through infinite-scroll/virtual-rendered pages (like Twitter/X timelines) and accumulate unique content items across scroll positions in a single call, " +
             "find_elements to discover interactive elements, " +
             "get_page_info for page metadata, get_backbone to get a structural overview of the page DOM as a simplified tree, " +
             "fetch to download files/resources using the page's session (returns metadata and a minis:// URL), " +
             "new_tab to open an additional tab, close_tab to close a tab, and list_tabs to see all open tabs. " +
             "Use set_viewport with viewport_width + viewport_height to override the viewport for the current session (e.g. before screenshotting a 1920×1080 HTML composition that would otherwise be cropped to the phone viewport); pass reset=true to drop the session override and fall back to the global browser setting. " +
-            "Use get_cookies to retrieve cookies for the current page URL / current site root domain only (including HttpOnly cookies). get_cookies supports optional 'keywords' (filter by cookie name) and 'fuzzy' (true=contains match, false=exact match, default true). It returns only a summary and an offload env file path — raw cookie values are NOT included in the tool response. To reuse cookies in shell commands: `. /var/minis/offloads/env_cookies_xxx.sh && command`. You may define alias variables when needed. " +
+            "Use get_cookies to retrieve cookies for the current page URL / current site root domain only (including HttpOnly cookies). get_cookies supports optional 'keywords' (filter by cookie name) and 'fuzzy' (true=contains match, false=exact match, default true). It returns a summary (80-char previews) plus a shell-sourceable env file holding the FULL values: `. /var/minis/offloads/env_cookies_xxx.sh` defines MINIS_COOKIE_HEADER (usable directly as a Cookie: header) and one MINIS_COOKIE_<NAME> per cookie — call APIs from the shell without reopening the browser. " +
             "Use set_cookies to write cookies into the current page's cookie store via the native cookie store (so even HttpOnly cookies, which JS cannot set, land). Pass a 'cookies' array of objects, each with name + value (required) and optional domain (defaults to the current page host), path (defaults to '/'), secure, http_only, and expires (Unix timestamp in seconds; omit for a session cookie). " +
             "Use wait_for_dom_stable to wait until the page DOM stops changing (useful after navigation or interactions that trigger async data loading — polls every 0.5s, resolves when mutation rate gradient is stable for 3+ intervals, default timeout 10s). " +
             "Use upload_file to feed files into a page's <input type=file>: pass 'files' as a JSON array of /var/minis/workspace|attachments|shared paths (or workspace-relative paths); no prior click is needed — the files are injected into the input directly (optionally target it with 'selector', default input[type=file]). If a native picker happens to be open, it is answered instead. Files up to 4 MB each / 8 MB total. " +
             "Use get_console_logs to read the page's console output (optional log_level filter: log/info/warn/error/debug/all). " +
             "Use get_network_log to see recent requests the page made (optional 'filter' = URL substring). Use get_response_log to read captured fetch/XHR RESPONSE bodies (the page-side ring; optional 'filter' = URL substring, last 20 shown, bodies truncated). " +
             "Use wait_for to wait until a selector appears and/or 'text' shows up (optional 'timeout' in seconds, default 10). Use select_option (selector + text = option label or value) to pick a dropdown option. " +
+            "Use wait_for_url to wait for the page URL ('url' = substring or /regex/) and wait_for_cookie to wait for a cookie ('text' = cookie name) — both default 30s (max 120s); with wait_for_network_idle (waits until fetch/XHR drain and the page goes quiet; 'amount' = quiet window ms, default 800) these make redirect chains and scan-to-login flows waitable. wait_for_dom_stable no longer treats a blank body as 'stable'. " +
+            "Use extract_qr to locate a QR code (visible square-ish img/canvas/svg >=96px): it saves up to 3 high-res crops under /var/minis/browser/ and returns their minis:// URLs — show one to the user with markdown so they can scan it, then wait with wait_for_cookie / wait_for_url. " +
             "go_back / go_forward / reload control navigation; clear_site_data wipes cookies + web storage (logs out of every site). " +
             "Use gesture for real touch gestures (injected as input, not script): long_press (context menus / selection), double_click, drag with to_x/to_y as the destination in viewport CSS px, or pinch (two-finger zoom around the target; 'amount' = how far each finger spreads in CSS px, default 100, negative zooms out). Use export_pdf to archive the current page as a multi-page PDF (saved under /var/minis/browser/ and returned as a path). " +
-            "Use screenshot together with 'selector' to capture just that element (cropped; full_page still captures everything). " +
+            "Use screenshot together with 'selector' to capture just that element (cropped; full_page still captures everything); 'scale' (0.1–1.5) downscales before encoding — scale=0.5 cuts the image payload ~4x. " +
             "Use tab_id to target a specific tab (defaults to the most recently used tab).",
         parameters = mapOf(
             "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Open Wikipedia homepage', 'Take screenshot of current page'). Use the same language as the user."),
             "action" to AgentToolParam("string", "The browser action to perform",
                 enumValues = BrowserAction.allValues),
-            "url" to AgentToolParam("string", "URL to navigate to (for navigate action) or resource to download (for fetch action)"),
-            "selector" to AgentToolParam("string", "CSS selector for targeting elements (click, type, get_text, scroll, hover, find_elements). For scroll: specify a scrollable container to scroll (e.g. 'div.timeline'); if omitted, auto-detects the best scrollable element."),
-            "text" to AgentToolParam("string", "Text to type (for type action)"),
+            "url" to AgentToolParam("string", "URL to navigate to (navigate), a resource to download (fetch), or the pattern to wait for (wait_for_url: substring, or /regex/)."),
+            "selector" to AgentToolParam("string", "Element selector for click/type/get_text/scroll/hover/find_elements/press_key-focus/screenshot-crop. Accepts CSS, or smart forms: text=<visible label> (substring; quote for exact), aria-label=<label>, role=button[name=<label>] — these also search Shadow DOM + same-origin iframes. For scroll: a scrollable container (e.g. 'div.timeline'); if omitted, auto-detects the best scrollable element."),
+            "text" to AgentToolParam("string", "Text to type (type), option label/value (select_option), wait target text (wait_for), or the cookie name to watch for (wait_for_cookie)."),
             "coordinate_x" to AgentToolParam("integer", "X coordinate for click (alternative to selector)"),
             "coordinate_y" to AgentToolParam("integer", "Y coordinate for click (alternative to selector)"),
             "direction" to AgentToolParam("string", "Scroll direction", enumValues = listOf("up", "down")),
             "amount" to AgentToolParam("integer", "Scroll amount in pixels (default: 500)"),
-            "script" to AgentToolParam("string", "JavaScript code to execute (for execute_js action). The script runs inside an async function wrapper — `await` and top-level `return` are both supported (e.g. `var r = await fetch(url); return await r.json()`)."),
+            "script" to AgentToolParam("string", "JavaScript code to execute (for execute_js action). The script runs inside an async function wrapper — `await` and top-level `return` are both supported (e.g. `var r = await fetch(url); return await r.json()`). Optional 'timeout' (seconds, default 30, max 300); on timeout the result reports whether the URL changed — for a navigating script that is usually the success signal, not a failure."),
             "user_agent" to AgentToolParam("string", "User agent profile to switch to", enumValues = listOf("desktop_chrome", "mobile_chrome")),
             "max_depth" to AgentToolParam("integer", "Maximum tree depth for get_backbone (default: 5)"),
             "scroll_count" to AgentToolParam("integer", "Number of scroll steps for scroll_and_collect (default: 10, max: 20). Each step scrolls by 'amount' pixels and waits for new content."),
@@ -184,7 +188,9 @@ object AgentTools {
             "gesture" to AgentToolParam("string", "For gesture: the gesture to perform", enumValues = listOf("long_press", "double_click", "drag", "pinch")),
             "to_x" to AgentToolParam("integer", "For gesture=drag: destination X in viewport CSS pixels."),
             "to_y" to AgentToolParam("integer", "For gesture=drag: destination Y in viewport CSS pixels."),
-            "timeout" to AgentToolParam("integer", "Timeout in seconds for wait_for_dom_stable (default: 10, polls every 0.5s) or wait_for (default: 10, polls every 0.25s)."),
+            "key" to AgentToolParam("string", "For press_key: base key plus optional modifiers — Enter, Escape, Tab, Space, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12, a-z, 0-9; combine with '+', e.g. 'ctrl+Enter', 'shift+Tab'. Injected as a real key event (React sees a trusted event)."),
+            "scale" to AgentToolParam("number", "For screenshot: downscale factor 0.1–1.5 (1.0 = native size). 0.5 roughly quarters the image payload — use when you need the layout, not fine detail."),
+            "timeout" to AgentToolParam("integer", "Timeout in seconds: wait_for_dom_stable (default 10) / wait_for (default 10) / wait_for_url / wait_for_cookie / wait_for_network_idle (default 30, max 120) / execute_js (default 30, max 300)."),
             "viewport_width" to AgentToolParam("integer", "Viewport width in CSS pixels for set_viewport (e.g. 1920). Required together with viewport_height unless reset=true."),
             "viewport_height" to AgentToolParam("integer", "Viewport height in CSS pixels for set_viewport (e.g. 1080). Required together with viewport_width unless reset=true."),
             "reset" to AgentToolParam("boolean", "For set_viewport: when true, clear the session-level viewport override and fall back to the global browser setting."),
@@ -199,7 +205,7 @@ object AgentTools {
             "full_page" to AgentToolParam("boolean", "For screenshot: capture the entire scrollable page by temporarily stretching the browser viewport to document.documentElement.scrollHeight. Default false captures the visible viewport only. Capped at 32768px tall; when capped, the result text includes 'Truncated: true' and the original height, so you can scroll and capture the remainder separately."),
         ),
         required = listOf("tool_title", "action"),
-        propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "text", "coordinate_x", "coordinate_y", "direction", "amount", "scroll_count", "item_selector", "script", "user_agent", "max_depth", "keywords", "fuzzy", "cookies", "files", "log_level", "filter", "gesture", "to_x", "to_y", "timeout", "viewport_width", "viewport_height", "reset", "full_page"),
+        propertyOrdering = listOf("tool_title", "action", "tab_id", "url", "selector", "text", "coordinate_x", "coordinate_y", "direction", "amount", "scroll_count", "item_selector", "script", "user_agent", "max_depth", "keywords", "fuzzy", "cookies", "files", "log_level", "filter", "gesture", "to_x", "to_y", "key", "scale", "timeout", "viewport_width", "viewport_height", "reset", "full_page"),
     )
 
     // Aligned with iOS AIChatViewModel.swift:5059-5067

@@ -45,7 +45,14 @@ enum class BrowserAction(val value: String) {
     // events): long-press context menus/selection, double-tap, drag, pinch.
     GESTURE("gesture"),
     // [T-android-browser-pdf] Archive the page as a multi-page PDF.
-    EXPORT_PDF("export_pdf");
+    EXPORT_PDF("export_pdf"),
+    // [T-android-browser-smart-selectors-2026-10] Keyboard injection (press_key),
+    // URL / cookie / network-idle waits, and QR capture for scan-to-login flows.
+    PRESS_KEY("press_key"),
+    WAIT_FOR_URL("wait_for_url"),
+    WAIT_FOR_COOKIE("wait_for_cookie"),
+    WAIT_FOR_NETWORK_IDLE("wait_for_network_idle"),
+    EXTRACT_QR("extract_qr");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action
@@ -62,7 +69,7 @@ enum class BrowserAction(val value: String) {
 
         /** Actions that visually change the page and warrant an auto-snapshot. */
         val visualChangeActions: Set<BrowserAction> = setOf(
-            NAVIGATE, CLICK, SCROLL, HOVER, TYPE, GESTURE
+            NAVIGATE, CLICK, SCROLL, HOVER, TYPE, GESTURE, PRESS_KEY
         )
 
         /**

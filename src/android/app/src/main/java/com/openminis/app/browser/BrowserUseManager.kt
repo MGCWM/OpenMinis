@@ -1011,7 +1011,11 @@ class BrowserUseManager(
         val prevUrl = withContext(Dispatchers.Main) { webView.url }
         var result: BrowserActionResult = when (input.action) {
             BrowserAction.NAVIGATE -> navigate(input.url)
-            BrowserAction.SCREENSHOT -> return screenshot(fullPage = input.fullPage, elementSelector = input.selector)
+            BrowserAction.SCREENSHOT -> return screenshot(
+                fullPage = input.fullPage,
+                elementSelector = input.selector,
+                scale = input.scale?.toFloat(),
+            )
             BrowserAction.GESTURE -> return performGesture(input)
             BrowserAction.EXPORT_PDF -> return exportPdf()
             BrowserAction.CLICK -> click(input.selector, input.coordinateX, input.coordinateY)
@@ -1019,7 +1023,7 @@ class BrowserUseManager(
             BrowserAction.GET_TEXT -> return getText(input.selector)
             BrowserAction.SCROLL -> scroll(input.selector, input.direction, input.amount)
             BrowserAction.GET_PAGE_INFO -> return getPageInfo()
-            BrowserAction.EXECUTE_JS -> return executeJS(input.script)
+            BrowserAction.EXECUTE_JS -> return executeJS(input.script, input.timeoutMs)
             BrowserAction.FIND_ELEMENTS -> return findElements(input.selector)
             BrowserAction.HOVER -> hover(input.selector)
             BrowserAction.GET_READABLE -> return getReadable()
@@ -1070,6 +1074,11 @@ class BrowserUseManager(
             BrowserAction.SELECT_OPTION -> return selectOption(input.selector, input.text)
             BrowserAction.WAIT_FOR -> return waitFor(input.selector, input.text, input.timeoutMs)
             BrowserAction.CLEAR_SITE_DATA -> return clearSiteData()
+            BrowserAction.PRESS_KEY -> pressKey(input.key, input.selector)
+            BrowserAction.WAIT_FOR_URL -> return waitForUrl(input.url, input.timeoutMs)
+            BrowserAction.WAIT_FOR_COOKIE -> return waitForCookie(input.text, input.timeoutMs)
+            BrowserAction.WAIT_FOR_NETWORK_IDLE -> return waitForNetworkIdle(input.timeoutMs, input.amount)
+            BrowserAction.EXTRACT_QR -> return extractQr()
             BrowserAction.GET_RESPONSE_LOG -> {
                 val lines = runCatching { readResponseLog(input.filter) }.getOrDefault(emptyList())
                 return BrowserActionResult(
@@ -1225,8 +1234,13 @@ class BrowserUseManager(
         val originalHeightPx: Int,
     )
 
-    private suspend fun screenshot(fullPage: Boolean = false, elementSelector: String? = null): BrowserActionResult {
-        if (!fullPage && !elementSelector.isNullOrBlank()) return elementScreenshot(elementSelector)
+    private suspend fun screenshot(
+        fullPage: Boolean = false,
+        elementSelector: String? = null,
+        scale: Float? = null,
+    ): BrowserActionResult {
+        if (!fullPage && !elementSelector.isNullOrBlank()) return elementScreenshot(elementSelector, scale)
+        val k = clampShotScale(scale)
         if (fullPage) {
             val captured = captureFullPageBitmap()
                 ?: return BrowserActionResult.error("Failed to capture the full page")
@@ -1235,11 +1249,18 @@ class BrowserUseManager(
                 fullPage = true,
                 truncated = captured.truncated,
                 originalHeightPx = captured.originalHeightPx,
+                scale = k,
             )
         }
         val bitmap = captureWebViewBitmap()
             ?: return BrowserActionResult.error("Failed to capture screenshot")
-        return finishScreenshot(bitmap)
+        return finishScreenshot(bitmap, scale = k)
+    }
+
+    /** [T-android-browser-shot-scale-2026-10] Clamp a caller scale to 0.1–1.5 (1.0 = native). */
+    private fun clampShotScale(scale: Float?): Float {
+        if (scale == null || scale.isNaN() || scale <= 0f) return 1f
+        return scale.coerceIn(0.1f, 1.5f)
     }
 
     /** Full-page capture: stretch → capture → restore, shared by screenshot + PDF. */
@@ -1460,12 +1481,22 @@ class BrowserUseManager(
         truncated: Boolean = false,
         originalHeightPx: Int = 0,
         note: String? = null,
+        scale: Float = 1f,
     ): BrowserActionResult {
-        val w = bitmap.width; val h = bitmap.height
+        // [T-android-browser-shot-scale-2026-10] Optional downscale before
+        // encoding — the JPEG bytes are the token cost, so half-size shots
+        // (scale=0.5) cut it ~4x.
+        val outBitmap = if (scale < 0.999f) {
+            val sw = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val sh = (bitmap.height * scale).toInt().coerceAtLeast(1)
+            val scaled = try { Bitmap.createScaledBitmap(bitmap, sw, sh, true) } catch (_: Throwable) { null }
+            if (scaled != null) { bitmap.recycle(); scaled } else bitmap
+        } else bitmap
+        val w = outBitmap.width; val h = outBitmap.height
         val file = try {
-            withContext(Dispatchers.IO) { saveBitmapToFile(bitmap, "screenshot") }
+            withContext(Dispatchers.IO) { saveBitmapToFile(outBitmap, "screenshot") }
         } finally {
-            bitmap.recycle()
+            outBitmap.recycle()
         }
         // Encode once and release native pixels before creating the protocol payload.
         val base64 = withContext(Dispatchers.IO) {
@@ -1494,7 +1525,7 @@ class BrowserUseManager(
     }
 
     /** [T-android-browser-gestures] Crop the current viewport to one element. */
-    private suspend fun elementScreenshot(selector: String): BrowserActionResult {
+    private suspend fun elementScreenshot(selector: String, scale: Float? = null): BrowserActionResult {
         val rectRaw = runCatching { evaluateJavascript(BrowserUseJS.elementRect(selector)) }.getOrNull()
             ?: return BrowserActionResult.error("Element screenshot failed: no rect for $selector")
         val rect = runCatching { JSONObject(rectRaw) }.getOrNull()
@@ -1539,6 +1570,7 @@ class BrowserUseManager(
         return finishScreenshot(
             cropped,
             note = "Element: $selector (${cssW.toInt()}x${cssH.toInt()} CSS px)",
+            scale = clampShotScale(scale),
         )
     }
 
@@ -1933,24 +1965,24 @@ class BrowserUseManager(
 
     /** Register the fetch/XHR+error instrumentation as early as possible. */
     private fun installEarlyScripts() {
-        val script = BrowserUseJS.EARLY_NET_INSTRUMENTATION_JS
+        val net = BrowserUseJS.EARLY_NET_INSTRUMENTATION_JS
+        val helpers = BrowserUseJS.QUERY_HELPERS_JS
         try {
             if (androidx.webkit.WebViewFeature.isFeatureSupported(
                     androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT,
                 )
             ) {
-                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
-                    webView, script, setOf("*"),
-                )
-                Log.d(TAG, "net instrumentation registered at document start")
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(webView, net, setOf("*"))
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(webView, helpers, setOf("*"))
+                Log.d(TAG, "net + query instrumentation registered at document start")
                 return
             }
         } catch (t: Throwable) {
             Log.w(TAG, "document-start script unsupported: ${t.message}")
         }
-        // Fallback: inject on page start (idempotent in-page guard).
-        earlyScriptFallback = script
-        Log.d(TAG, "net instrumentation registered via page-start fallback")
+        // Fallback: inject on page start (both scripts are idempotent).
+        earlyScriptFallback = net + "\n" + helpers
+        Log.d(TAG, "net + query instrumentation registered via page-start fallback")
     }
 
     private fun saveBitmapToFile(bitmap: Bitmap, prefix: String, quality: Int = SCREENSHOT_QUALITY): File {
@@ -1970,7 +2002,122 @@ class BrowserUseManager(
             x != null && y != null -> BrowserUseJS.clickCoordinate(x, y)
             else -> return BrowserActionResult.error("click requires 'selector' or 'coordinate_x'/'coordinate_y'")
         }
-        return evaluateAndReturn(js)
+        val result = evaluateAndReturn(js)
+        // [T-android-browser-click-nav-2026-10] A click that starts a
+        // navigation returns while the load is still in flight. Wait
+        // (bounded) so the URL-change suffix below reports the settled URL
+        // instead of a stale one, and the auto-snapshot doesn't catch a
+        // half-white page.
+        if (result.success && _isLoading.value) {
+            withTimeoutOrNull(3_000L) {
+                while (_isLoading.value) kotlinx.coroutines.delay(100)
+            }
+        }
+        return result
+    }
+
+    // -- [T-android-browser-smart-selectors-2026-10] press_key --
+
+    /**
+     * Inject a REAL key event through [WebView.dispatchKeyEvent] — the same
+     * native-input channel as the touch gestures — so React/Vue key handlers
+     * (Enter-to-send, Escape, Tab focus walks) see a trusted event instead of
+     * a synthetic KeyboardEvent. Combos: "ctrl+enter", "shift+tab", "meta+a".
+     */
+    private suspend fun pressKey(key: String?, selector: String?): BrowserActionResult {
+        if (key.isNullOrBlank()) {
+            return BrowserActionResult.error("press_key requires 'key' (e.g. Enter, Tab, ctrl+Enter)")
+        }
+        var meta = 0
+        var base: String? = null
+        for (part in key.split("+").map { it.trim() }.filter { it.isNotEmpty() }) {
+            when (part.lowercase()) {
+                "ctrl", "control" -> meta = meta or android.view.KeyEvent.META_CTRL_ON
+                "shift" -> meta = meta or android.view.KeyEvent.META_SHIFT_ON
+                "alt" -> meta = meta or android.view.KeyEvent.META_ALT_ON
+                "meta", "win", "cmd", "super" -> meta = meta or android.view.KeyEvent.META_META_ON
+                else -> base = part
+            }
+        }
+        val b = base ?: return BrowserActionResult.error("press_key: no base key in '$key' (modifiers only)")
+        val code = keyCodeFor(b) ?: return BrowserActionResult.error(
+            "press_key: unsupported key '$b'. Supported: Enter, Escape, Tab, Space, Backspace, Delete, " +
+                "ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12, a-z, 0-9 (combine with ctrl/shift/alt/meta).",
+        )
+        if (!selector.isNullOrBlank()) {
+            val raw = runCatching { evaluateJavascript(BrowserUseJS.focusElement(selector)) }.getOrNull().orEmpty()
+            val j = runCatching { JSONObject(raw) }.getOrNull()
+            if (j == null || j.has("error")) {
+                return BrowserActionResult.error(
+                    "press_key: could not focus '$selector'" +
+                        (j?.optString("error")?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""),
+                )
+            }
+            kotlinx.coroutines.delay(80)
+        }
+        withContext(Dispatchers.Main) {
+            webView.requestFocus()
+            val now = android.os.SystemClock.uptimeMillis()
+            webView.dispatchKeyEvent(
+                android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, code, 0, meta),
+            )
+            webView.dispatchKeyEvent(
+                android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, code, 0, meta),
+            )
+        }
+        val label = buildString {
+            if (meta and android.view.KeyEvent.META_CTRL_ON != 0) append("Ctrl+")
+            if (meta and android.view.KeyEvent.META_SHIFT_ON != 0) append("Shift+")
+            if (meta and android.view.KeyEvent.META_ALT_ON != 0) append("Alt+")
+            if (meta and android.view.KeyEvent.META_META_ON != 0) append("Meta+")
+            append(b)
+        }
+        return BrowserActionResult(
+            text = "Pressed $label (real key event via WebView)" +
+                if (!selector.isNullOrBlank()) " — focused $selector first" else " — sent to the focused element",
+        )
+    }
+
+    private fun keyCodeFor(name: String): Int? {
+        return when (name.lowercase()) {
+            "enter", "return" -> android.view.KeyEvent.KEYCODE_ENTER
+            "escape", "esc" -> android.view.KeyEvent.KEYCODE_ESCAPE
+            "tab" -> android.view.KeyEvent.KEYCODE_TAB
+            "space", "spacebar" -> android.view.KeyEvent.KEYCODE_SPACE
+            "backspace" -> android.view.KeyEvent.KEYCODE_DEL
+            "delete", "del" -> android.view.KeyEvent.KEYCODE_FORWARD_DEL
+            "arrowup", "up" -> android.view.KeyEvent.KEYCODE_DPAD_UP
+            "arrowdown", "down" -> android.view.KeyEvent.KEYCODE_DPAD_DOWN
+            "arrowleft", "left" -> android.view.KeyEvent.KEYCODE_DPAD_LEFT
+            "arrowright", "right" -> android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+            "home" -> android.view.KeyEvent.KEYCODE_MOVE_HOME
+            "end" -> android.view.KeyEvent.KEYCODE_MOVE_END
+            "pageup" -> android.view.KeyEvent.KEYCODE_PAGE_UP
+            "pagedown" -> android.view.KeyEvent.KEYCODE_PAGE_DOWN
+            "f1" -> android.view.KeyEvent.KEYCODE_F1
+            "f2" -> android.view.KeyEvent.KEYCODE_F2
+            "f3" -> android.view.KeyEvent.KEYCODE_F3
+            "f4" -> android.view.KeyEvent.KEYCODE_F4
+            "f5" -> android.view.KeyEvent.KEYCODE_F5
+            "f6" -> android.view.KeyEvent.KEYCODE_F6
+            "f7" -> android.view.KeyEvent.KEYCODE_F7
+            "f8" -> android.view.KeyEvent.KEYCODE_F8
+            "f9" -> android.view.KeyEvent.KEYCODE_F9
+            "f10" -> android.view.KeyEvent.KEYCODE_F10
+            "f11" -> android.view.KeyEvent.KEYCODE_F11
+            "f12" -> android.view.KeyEvent.KEYCODE_F12
+            else -> {
+                if (name.length == 1) {
+                    val c = name[0]
+                    when {
+                        c in 'a'..'z' -> android.view.KeyEvent.KEYCODE_A + (c - 'a')
+                        c in 'A'..'Z' -> android.view.KeyEvent.KEYCODE_A + (c - 'A')
+                        c in '0'..'9' -> android.view.KeyEvent.KEYCODE_0 + (c - '0')
+                        else -> null
+                    }
+                } else null
+            }
+        }
     }
 
     // -- Type --
@@ -2011,8 +2158,14 @@ class BrowserUseManager(
 
     // -- Execute JS --
 
-    private suspend fun executeJS(script: String?): BrowserActionResult {
+    private suspend fun executeJS(script: String?, timeoutSec: Int?): BrowserActionResult {
         if (script.isNullOrEmpty()) return BrowserActionResult.error("execute_js requires 'script'")
+        // [T-android-browser-execjs-2026-10] 'timeout' (seconds) makes the
+        // budget caller-controlled; a timeout on a navigation-triggering
+        // script is often the SUCCESS signal, so the message now says what
+        // the page actually did.
+        val budgetMs = ((timeoutSec?.takeIf { it > 0 } ?: 30).coerceAtMost(300)) * 1000L
+        val urlBefore = _currentURL.value
         // Wrap in an async IIFE so `await` works in user scripts.
         // Android WebView doesn't resolve Promises from evaluateJavascript,
         // so we use a JS bridge callback (__minis__.resolve / __minis__.reject).
@@ -2039,10 +2192,32 @@ class BrowserUseManager(
             withContext(Dispatchers.Main) {
                 webView.evaluateJavascript(wrapped, null)
             }
-            val raw = withTimeoutOrNull(30_000L) { deferred.await() }
+            val raw = withTimeoutOrNull(budgetMs) { deferred.await() }
                 ?: run {
                     asyncJsDeferred = null
-                    return BrowserActionResult.error("JavaScript execution timed out (30s)")
+                    val urlAfter = _currentURL.value
+                    val navigated = urlBefore.isNotEmpty() && urlAfter.isNotEmpty() && urlBefore != urlAfter
+                    val rs = try {
+                        withTimeoutOrNull(1_500L) {
+                            evaluateJavascript(
+                                "(function(){try{return document.readyState;}catch(e){return '';}})()"
+                            )
+                        }.orEmpty().trim('"')
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    val hint = buildString {
+                        append("JavaScript execution timed out after ${budgetMs / 1000}s — page URL ")
+                        if (navigated) {
+                            append("changed: $urlBefore -> $urlAfter (the navigation itself likely succeeded; re-check the page before retrying)")
+                        } else {
+                            append("unchanged")
+                        }
+                        if (rs.isNotEmpty()) append("; readyState=$rs") else append("; the page is still busy (readyState probe did not answer)")
+                    }
+                    return BrowserActionResult.error(hint)
                 }
             asyncJsDeferred = null
             val json = try { JSONObject(raw) } catch (_: Exception) { null }
@@ -2430,6 +2605,184 @@ class BrowserUseManager(
         }
     }
 
+    // -- [T-android-browser-smart-waits-2026-10] URL / cookie / network-idle waits --
+
+    private suspend fun waitForUrl(pattern: String?, timeoutMs: Int?): BrowserActionResult {
+        if (pattern.isNullOrBlank()) {
+            return BrowserActionResult.error("wait_for_url requires 'url' (substring, or /regex/ e.g. /login|dashboard/)")
+        }
+        val timeoutSec = (timeoutMs?.takeIf { it > 0 } ?: 30).coerceAtMost(120)
+        val regex = if (pattern.length > 2 && pattern.startsWith("/") && pattern.endsWith("/")) {
+            runCatching { Regex(pattern.substring(1, pattern.length - 1)) }.getOrNull()
+        } else null
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutSec * 1000L
+        while (System.currentTimeMillis() < deadline) {
+            val u = _currentURL.value
+            if (u.isNotEmpty()) {
+                val hit = if (regex != null) regex.containsMatchIn(u) else u.contains(pattern)
+                if (hit) {
+                    return BrowserActionResult(text = "wait_for_url: matched after ${System.currentTimeMillis() - started}ms — $u")
+                }
+            }
+            kotlinx.coroutines.delay(250)
+        }
+        return BrowserActionResult(
+            text = "wait_for_url: no match within ${timeoutSec}s (current: ${_currentURL.value})",
+            success = false,
+        )
+    }
+
+    private suspend fun waitForCookie(name: String?, timeoutMs: Int?): BrowserActionResult {
+        if (name.isNullOrBlank()) {
+            return BrowserActionResult.error("wait_for_cookie requires 'text' = the cookie name to watch for")
+        }
+        val url = _currentURL.value.takeIf { it.isNotEmpty() }
+            ?: return BrowserActionResult.error("wait_for_cookie: no page is loaded (navigate first)")
+        val mgr = runCatching { CookieManager.getInstance() }.getOrNull()
+            ?: return BrowserActionResult.error("wait_for_cookie: CookieManager unavailable")
+        val timeoutSec = (timeoutMs?.takeIf { it > 0 } ?: 30).coerceAtMost(120)
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutSec * 1000L
+        while (System.currentTimeMillis() < deadline) {
+            val header = mgr.getCookie(url).orEmpty()
+            val hit = header.split(";").map { it.trim() }.firstOrNull { it.startsWith("$name=") }
+            if (hit != null) {
+                val valueLen = (hit.length - name.length - 1).coerceAtLeast(0)
+                return BrowserActionResult(
+                    text = "wait_for_cookie: '$name' appeared after ${System.currentTimeMillis() - started}ms " +
+                        "(value: $valueLen chars — use get_cookies to export the full values)",
+                )
+            }
+            kotlinx.coroutines.delay(300)
+        }
+        return BrowserActionResult(
+            text = "wait_for_cookie: '$name' did not appear within ${timeoutSec}s",
+            success = false,
+        )
+    }
+
+    private suspend fun waitForNetworkIdle(timeoutMs: Int?, idleMsRaw: Int?): BrowserActionResult {
+        val timeoutSec = (timeoutMs?.takeIf { it > 0 } ?: 30).coerceAtMost(120)
+        val idleMs = (idleMsRaw?.takeIf { it > 0 } ?: 800).coerceIn(200, 5_000)
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutSec * 1000L
+        var lastLogCount = -1
+        var lastLogChange = System.currentTimeMillis()
+        var report = ""
+        while (System.currentTimeMillis() < deadline) {
+            val probeRaw = runCatching { evaluateJavascript(BrowserUseJS.netIdleProbe()) }.getOrNull()
+            val j = probeRaw?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val pending = j?.optInt("pending", -1) ?: -1
+            val lastAgo = j?.optInt("lastAgo", -1) ?: -1
+            val readyState = j?.optString("readyState", "") ?: ""
+            val textLen = j?.optInt("textLen", 0) ?: 0
+            val hasMedia = j?.optBoolean("hasMedia", false) ?: false
+            val logCount = synchronized(logLock) { networkLog.size }
+            if (logCount != lastLogCount) {
+                lastLogCount = logCount
+                lastLogChange = System.currentTimeMillis()
+            }
+            val quietMs = System.currentTimeMillis() - lastLogChange
+            val netQuiet = (pending <= 0) && (lastAgo < 0 || lastAgo >= idleMs) && quietMs >= idleMs
+            val blank = textLen == 0 && !hasMedia
+            report = "pending=$pending quiet=${quietMs}ms readyState=$readyState visibleText=$textLen"
+            if (netQuiet && readyState != "loading" && !blank) {
+                return BrowserActionResult(
+                    text = "wait_for_network_idle: idle after ${System.currentTimeMillis() - started}ms ($report)",
+                )
+            }
+            kotlinx.coroutines.delay(300)
+        }
+        return BrowserActionResult(
+            text = "wait_for_network_idle: not idle within ${timeoutSec}s (last: $report)" +
+                if (report.contains("visibleText=0")) " — the page still looks blank." else "",
+            success = false,
+        )
+    }
+
+    // -- [T-android-browser-qr-2026-10] extract_qr --
+
+    private suspend fun extractQr(): BrowserActionResult {
+        val raw = runCatching { evaluateJavascript(BrowserUseJS.qrCandidates()) }.getOrNull()
+            ?: return BrowserActionResult.error("extract_qr: page did not answer")
+        val j = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("extract_qr: bad candidates JSON")
+        val arr = j.optJSONArray("candidates")
+            ?: return BrowserActionResult.error("extract_qr: no candidates array")
+        if (arr.length() == 0) {
+            return BrowserActionResult(
+                text = "extract_qr: no QR-plausible element found (a visible square-ish img/canvas/svg/video at least 96px is expected). " +
+                    "Scroll the code into view and retry, or take a screenshot to inspect the page.",
+                success = false,
+            )
+        }
+        val sessionBrowserDir: File? = try {
+            val ctx = appContext
+            val sid = sessionIdProvider()?.takeIf { it.isNotBlank() }
+            if (ctx != null && sid != null) {
+                com.openminis.app.sandbox.SessionMounts.sessionDir(ctx.filesDir, sid, "browser").apply { mkdirs() }
+            } else null
+        } catch (_: Throwable) {
+            null
+        }
+        val outDir = sessionBrowserDir ?: screenshotsDir
+        val viewport = captureWebViewBitmap()
+            ?: return BrowserActionResult.error("extract_qr: viewport capture failed")
+        val phys = withContext(Dispatchers.Main) { webView.width to webView.height }
+        val density = withContext(Dispatchers.Main) { webView.resources.displayMetrics.density }
+        val bScale = if (phys.first > 0) viewport.width.toFloat() / phys.first else 1f
+        val stamp = System.currentTimeMillis() / 1000
+        val lines = mutableListOf<String>()
+        var firstHostPath: String? = null
+        val count = minOf(arr.length(), 3)
+        for (i in 0 until count) {
+            val c = arr.optJSONObject(i) ?: continue
+            val cssX = c.optDouble("x", -1.0)
+            val cssY = c.optDouble("y", -1.0)
+            val cssW = c.optDouble("w", 0.0)
+            val cssH = c.optDouble("h", 0.0)
+            if (cssX < 0 || cssY < 0 || cssW < 8 || cssH < 8) continue
+            var bx = (cssX * density * bScale).toInt()
+            var by = (cssY * density * bScale).toInt()
+            var bw = (cssW * density * bScale).toInt()
+            var bh = (cssH * density * bScale).toInt()
+            bx = bx.coerceIn(0, maxOf(0, viewport.width - 1))
+            by = by.coerceIn(0, maxOf(0, viewport.height - 1))
+            bw = bw.coerceIn(1, viewport.width - bx)
+            bh = bh.coerceIn(1, viewport.height - by)
+            val crop = try { Bitmap.createBitmap(viewport, bx, by, bw, bh) } catch (_: Throwable) { null } ?: continue
+            // Upscale up to ~3x (long edge capped at 2048) so a phone scanner locks on fast.
+            val longEdge = maxOf(bw, bh)
+            val up = if (longEdge in 1..2047) {
+                val target = (longEdge * 3).coerceAtMost(2048)
+                val k = target.toFloat() / longEdge
+                val scaled = try {
+                    Bitmap.createScaledBitmap(crop, (bw * k).toInt().coerceAtLeast(1), (bh * k).toInt().coerceAtLeast(1), true)
+                } catch (_: Throwable) { null }
+                if (scaled != null) { crop.recycle(); scaled } else crop
+            } else crop
+            val fname = "qr_${stamp}_${i + 1}.png"
+            val f = File(outDir, fname)
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { f.outputStream().use { up.compress(Bitmap.CompressFormat.PNG, 100, it) } }.isSuccess
+            }
+            up.recycle()
+            if (!ok) continue
+            if (firstHostPath == null) firstHostPath = f.absolutePath
+            val ref = if (sessionBrowserDir != null) "/var/minis/browser/$fname  (minis://browser/$fname)" else f.absolutePath
+            lines += "QR #${i + 1}: $ref  [tag=${c.optString("tag")}, ${c.optInt("w")}x${c.optInt("h")} css px]"
+        }
+        viewport.recycle()
+        if (lines.isEmpty()) return BrowserActionResult.error("extract_qr: crops failed")
+        val text = buildString {
+            appendLine("extract_qr: ${lines.size} candidate(s) captured — show one to the user to scan (e.g. ![qr](minis://browser/qr_…)):")
+            for (l in lines) appendLine("  $l")
+            append("After the user scans, wait for the login to land with wait_for_cookie / wait_for_url.")
+        }
+        return BrowserActionResult(text = text, imageFilePath = firstHostPath)
+    }
+
     // -- Result Formatting --
 
     private fun formatJSONResult(json: JSONObject): String = buildString {
@@ -2606,14 +2959,78 @@ class BrowserUseManager(
                 else name.equals(kw, ignoreCase = true)
             }
         }
+        // [T-android-browser-cookies-export-2026-10] The tool description has
+        // always promised a shell-usable export; it is actually written now.
+        // FULL values go to the session's /var/minis/offloads (mode 0600) and
+        // never enter the tool response — the summary keeps 80-char previews.
+        val exportPath = exportCookiesEnv(url, filtered)
         val text = buildString {
             appendLine("Cookies for $url (${filtered.size} of ${pairs.size}):")
             for ((name, value) in filtered) {
                 val preview = if (value.length > 80) value.take(77) + "…" else value
                 appendLine("  $name = $preview")
             }
+            if (exportPath != null) {
+                appendLine()
+                appendLine("Full values exported: $exportPath")
+                appendLine("Source it in the shell (. $exportPath) — it defines MINIS_COOKIE_HEADER plus one MINIS_COOKIE_<NAME> per cookie.")
+            } else {
+                appendLine()
+                appendLine("Full-value export unavailable in this context (no session dir); the values above are previews only.")
+            }
         }.trimEnd()
         return BrowserActionResult(text = text)
+    }
+
+    /**
+     * [T-android-browser-cookies-export-2026-10] Write the FULL cookie values
+     * (filtered set + the combined Cookie header) as a shell-sourceable env
+     * file under the session's /var/minis/offloads. Returns the Linux path,
+     * or null when no session context is available.
+     */
+    private fun exportCookiesEnv(url: String, pairs: List<Pair<String, String>>): String? {
+        val ctx = appContext ?: return null
+        val sid = sessionIdProvider()?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            val dir = com.openminis.app.sandbox.SessionMounts.sessionDir(ctx.filesDir, sid, "offloads")
+                .apply { mkdirs() }
+            val file = File(dir, "env_cookies_${System.currentTimeMillis() / 1000}.sh")
+            val sb = StringBuilder()
+            sb.append("#!/bin/sh\n")
+            sb.append("# minis browser cookies — ").append(url).append('\n')
+            sb.append("# generated ").append(
+                java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date()),
+            ).append('\n')
+            sb.append("# source me:  . /var/minis/offloads/").append(file.name).append('\n')
+            sb.append("export MINIS_COOKIE_HEADER=")
+                .append(shQuote(pairs.joinToString("; ") { (n, v) -> "$n=$v" })).append('\n')
+            for ((n, v) in pairs) {
+                sb.append("export MINIS_COOKIE_").append(envVarName(n)).append('=').append(shQuote(v)).append('\n')
+            }
+            file.writeText(sb.toString())
+            try {
+                file.setReadable(true, true)
+                file.setWritable(true, true)
+            } catch (_: Throwable) {
+            }
+            "/var/minis/offloads/${file.name}"
+        } catch (t: Throwable) {
+            Log.w(TAG, "cookie export failed: ${t.message}")
+            null
+        }
+    }
+
+    /** POSIX single-quote ( ' becomes '\'' ) so values survive `source` verbatim. */
+    private fun shQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+    /** Cookie name to env suffix: uppercase alnum/underscore, never a leading digit. */
+    private fun envVarName(name: String): String {
+        val cleaned = buildString {
+            for (ch in name.uppercase(java.util.Locale.US)) {
+                append(if (ch.isLetterOrDigit() || ch == '_') ch else '_')
+            }
+        }
+        return if (cleaned.isEmpty() || cleaned[0].isDigit()) "_$cleaned" else cleaned
     }
 
     // -- Set Cookies --
@@ -2801,7 +3218,10 @@ class BrowserUseManager(
                 "(function(){try{return (document.body&&document.body.innerHTML.length)||0;}catch(e){return -1;}})()"
             )
             val size = raw.toLongOrNull() ?: -1L
-            if (size == lastSize && size >= 0) { stable = true; break }
+            // [T-android-domstable-blank-2026-10] A blank body (length 0) is NOT
+            // stability — SPAs report an empty skeleton and the agent ended up
+            // "stably" reading a white page. Require a non-empty, unchanged body.
+            if (size == lastSize && size > 0) { stable = true; break }
             lastSize = size
             delay(pollInterval)
         }
@@ -2809,8 +3229,11 @@ class BrowserUseManager(
         return if (stable) {
             BrowserActionResult(text = "DOM stable after ${elapsed}ms (body length=$lastSize)")
         } else {
+            val blankNote = if (lastSize <= 0L) {
+                " — the page still looks blank (still loading?); try wait_for_network_idle"
+            } else ""
             BrowserActionResult(
-                text = "DOM did not stabilize within ${budget}ms (last body length=$lastSize)",
+                text = "DOM did not stabilize within ${budget}ms (last body length=$lastSize$blankNote)",
                 success = false,
             )
         }

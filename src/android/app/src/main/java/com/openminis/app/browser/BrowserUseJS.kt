@@ -19,6 +19,8 @@ object BrowserUseJS {
         (function(){
           if (window.__minis_net__) return;
           var ring = []; window.__minis_net__ = ring;
+          var state = {pending: 0, last: Date.now()}; window.__minis_net_state = state;
+          function touch() { state.last = Date.now(); }
           function push(e) { ring.push(e); if (ring.length > 200) ring.shift(); }
           function preview(s) {
             try {
@@ -36,6 +38,7 @@ object BrowserUseJS {
                   url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url) || '';
                   method = ((args[1] && args[1].method) || 'GET').toUpperCase();
                 } catch (_) {}
+                state.pending++; touch();
                 var t0 = Date.now();
                 return of.apply(this, args).then(function(resp) {
                   try {
@@ -44,9 +47,11 @@ object BrowserUseJS {
                       push({t:'fetch', m:method, u:String(url), s:resp.status, ms:Date.now()-t0, b:preview(b)});
                     }).catch(function() {});
                   } catch (_) {}
+                  state.pending--; touch();
                   return resp;
                 }, function(err) {
                   push({t:'fetch', m:method, u:String(url), s:0, ms:Date.now()-t0, b:'ERROR: ' + err});
+                  state.pending--; touch();
                   throw err;
                 });
               };
@@ -61,7 +66,9 @@ object BrowserUseJS {
             };
             XMLHttpRequest.prototype.send = function() {
               var x = this; var st = Date.now();
+              state.pending++; touch();
               x.addEventListener('loadend', function() {
+                state.pending--; touch();
                 try {
                   push({t:'xhr', m:(x.__minis && x.__minis.m) || 'GET', u:(x.__minis && x.__minis.u) || '', s:x.status, ms:Date.now()-st, b:preview(x.responseText)});
                 } catch (_) {}
@@ -80,10 +87,211 @@ object BrowserUseJS {
         })();
     """.trimIndent()
 
+    /**
+     * [T-android-browser-smart-selectors-2026-10] Installed alongside the net
+     * instrumentation (document start; page-start fallback). Defines
+     * `window.__MQF` / `window.__MQA` — a selector engine that understands
+     * `text=…`, `aria-label=…` and `role=button[name=…]` prefixes besides
+     * plain CSS, and searches through Shadow DOM roots and same-origin
+     * iframes. Action snippets call these when present and fall back to
+     * document.querySelector otherwise. Cross-origin iframes remain out of
+     * reach (same-origin policy); targets inside them can still be hit with
+     * coordinate clicks.
+     */
+    val QUERY_HELPERS_JS: String = """
+        (function(){
+          if (window.__MQF) return;
+          function isVisible(el) {
+            try {
+              if (!el || !el.getBoundingClientRect) return false;
+              var r = el.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) return false;
+              var st = window.getComputedStyle(el);
+              return !(st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0');
+            } catch (e) { return false; }
+          }
+          var SCAN_CAP = 12000;
+          function scanAll() {
+            var out = [];
+            function walk(root) {
+              if (!root || !root.querySelectorAll || out.length >= SCAN_CAP) return;
+              var all;
+              try { all = root.querySelectorAll('*'); } catch (e) { return; }
+              for (var i = 0; i < all.length; i++) {
+                if (out.length >= SCAN_CAP) return;
+                var el = all[i];
+                out.push(el);
+                try {
+                  if (el.shadowRoot) walk(el.shadowRoot);
+                  if (el.tagName === 'IFRAME') { var d = el.contentDocument; if (d) walk(d); }
+                } catch (e) {}
+              }
+            }
+            walk(document);
+            return out;
+          }
+          function cssFind(sel) { try { return document.querySelector(sel); } catch (e) { return null; } }
+          function cssFindAll(sel) { try { return Array.prototype.slice.call(document.querySelectorAll(sel)); } catch (e) { return []; } }
+          function implicitRole(el) {
+            var t = el.tagName;
+            var ty = String((el.getAttribute && el.getAttribute('type')) || '').toLowerCase();
+            if (t === 'BUTTON') return 'button';
+            if (t === 'A') return (el.getAttribute && el.getAttribute('href')) ? 'link' : null;
+            if (t === 'SELECT') return 'combobox';
+            if (t === 'TEXTAREA') return 'textbox';
+            if (t === 'INPUT') {
+              if (ty === 'submit' || ty === 'button' || ty === 'reset') return 'button';
+              if (ty === 'checkbox') return 'checkbox';
+              if (ty === 'radio') return 'radio';
+              if (ty === 'search') return 'searchbox';
+              return 'textbox';
+            }
+            if (t === 'IMG') return 'img';
+            return null;
+          }
+          function accName(el) {
+            var v = '';
+            try { v = el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || ''; } catch (e) {}
+            if (v) return String(v);
+            return String((el.innerText || el.textContent || el.value || ''));
+          }
+          function clickable(el) {
+            var t = el.tagName;
+            if (t === 'BUTTON' || t === 'A' || t === 'INPUT' || t === 'SELECT' || t === 'TEXTAREA' || t === 'LABEL') return true;
+            var r = '';
+            try { r = String(el.getAttribute('role') || '').toLowerCase(); } catch (e) {}
+            if (r === 'button' || r === 'link' || r === 'tab' || r === 'menuitem' || r === 'checkbox' || r === 'radio' || r === 'option') return true;
+            try { if (el.onclick) return true; } catch (e) {}
+            try { if (window.getComputedStyle(el).cursor === 'pointer') return true; } catch (e) {}
+            return false;
+          }
+          function pickBest(list) {
+            if (!list || !list.length) return null;
+            var best = null; var bestScore = -1; var bestArea = 1e18;
+            for (var i = 0; i < list.length && i < 40; i++) {
+              var el = list[i];
+              var area = 1e17;
+              try { var r = el.getBoundingClientRect(); area = r.width * r.height; } catch (e) {}
+              var score = 0;
+              if (clickable(el)) score += 2;
+              if (isVisible(el)) score += 1;
+              if (i < 8) score += 1;
+              if (score > bestScore || (score === bestScore && area < bestArea)) { best = el; bestScore = score; bestArea = area; }
+            }
+            return best || list[0];
+          }
+          function stripQuotes(v) {
+            if (v && v.length > 1) {
+              var a = v.charAt(0); var b = v.charAt(v.length - 1);
+              if ((a === '"' && b === '"') || (a === "'" && b === "'")) return v.slice(1, -1);
+            }
+            return v || '';
+          }
+          function matchText(sel) {
+            if (sel.toLowerCase().indexOf('text=') !== 0) return null;
+            var raw = sel.substring(5).trim();
+            var exact = false;
+            if (raw.length > 1 && ((raw.charAt(0) === '"' && raw.charAt(raw.length-1) === '"') || (raw.charAt(0) === "'" && raw.charAt(raw.length-1) === "'"))) {
+              raw = raw.slice(1, -1); exact = true;
+            }
+            var want = raw.trim().toLowerCase();
+            if (!want) return [];
+            var els = scanAll();
+            var exactHits = []; var looseHits = [];
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              var t = String(el.innerText || el.textContent || el.value || '').trim().toLowerCase();
+              var ph = '';
+              try { ph = String(el.getAttribute('placeholder') || '').toLowerCase(); } catch (e) {}
+              var al = '';
+              try { al = String(el.getAttribute('aria-label') || '').toLowerCase(); } catch (e) {}
+              if (!t && !ph && !al) continue;
+              if (t === want || ph === want || al === want) { exactHits.push(el); continue; }
+              if (!exact && (t.indexOf(want) >= 0 || ph.indexOf(want) >= 0 || al.indexOf(want) >= 0)) looseHits.push(el);
+            }
+            var best = pickBest(exactHits);
+            if (best) return [best].concat(exactHits, looseHits);
+            best = pickBest(looseHits);
+            return best ? [best].concat(looseHits) : [];
+          }
+          function matchAria(sel) {
+            if (sel.toLowerCase().indexOf('aria-label=') !== 0) return null;
+            var want = stripQuotes(sel.substring(11).trim()).toLowerCase();
+            var els = scanAll(); var hits = [];
+            for (var i = 0; i < els.length; i++) {
+              var v = '';
+              try { v = String(els[i].getAttribute('aria-label') || '').toLowerCase(); } catch (e) {}
+              if (v && v.indexOf(want) >= 0) hits.push(els[i]);
+            }
+            var best = pickBest(hits);
+            return best ? [best].concat(hits) : [];
+          }
+          function matchRole(sel) {
+            if (sel.toLowerCase().indexOf('role=') !== 0) return null;
+            var rest = sel.substring(5).trim();
+            var want = null;
+            var rb = rest.indexOf('[');
+            if (rb >= 0) {
+              var rbEnd = rest.lastIndexOf(']');
+              if (rbEnd > rb) {
+                var inner = rest.substring(rb + 1, rbEnd).trim();
+                if (inner.toLowerCase().indexOf('name=') === 0) {
+                  want = stripQuotes(inner.substring(5).trim()).toLowerCase();
+                }
+              }
+              rest = rest.substring(0, rb);
+            }
+            var role = rest.trim().toLowerCase();
+            if (!role) return [];
+            var els = scanAll(); var hits = [];
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              var r = '';
+              try { r = String(el.getAttribute('role') || '').toLowerCase(); } catch (e) {}
+              if (!r) r = implicitRole(el) || '';
+              if (r !== role) continue;
+              if (want !== null) {
+                var nm = accName(el).trim().toLowerCase();
+                if (nm.indexOf(want) < 0) continue;
+              }
+              hits.push(el);
+            }
+            var best = pickBest(hits);
+            return best ? [best].concat(hits) : [];
+          }
+          function limitOnly(arr, limit) { return arr.slice(0, limit || arr.length); }
+          function resolveAll(sel, limit) {
+            var s = String(sel == null ? '' : sel).trim();
+            var pref = matchText(s);
+            if (pref !== null) return limitOnly(pref, limit);
+            pref = matchAria(s);
+            if (pref !== null) return limitOnly(pref, limit);
+            pref = matchRole(s);
+            if (pref !== null) return limitOnly(pref, limit);
+            return cssFindAll(s).slice(0, limit);
+          }
+          window.__MQA = function(sel, limit) {
+            try { return resolveAll(sel, limit || 50); } catch (e) { return []; }
+          };
+          window.__MQF = function(sel) {
+            try {
+              var s = String(sel == null ? '' : sel).trim();
+              var sl = s.toLowerCase();
+              if (sl.indexOf('text=') === 0 || sl.indexOf('aria-label=') === 0 || sl.indexOf('role=') === 0) {
+                var arr = resolveAll(s, 1);
+                return arr.length ? arr[0] : null;
+              }
+              return cssFind(s) || null;
+            } catch (e) { return null; }
+          };
+        })();
+    """.trimIndent()
+
     /** Scroll the element into view and return its viewport rect (CSS px). */
     fun elementRect(selector: String): String = """
         (function(){
-          var el = document.querySelector(${JSONObject.quote(selector)});
+          var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+          var el = __f(${JSONObject.quote(selector)});
           if (!el) return JSON.stringify({error:'selector not found'});
           el.scrollIntoView({block:'center', inline:'center'});
           var r = el.getBoundingClientRect();
@@ -94,7 +302,8 @@ object BrowserUseJS {
     /** One synchronous poll for [waitFor] — returns JSON `{ok, matched, tag}`. */
     fun waitProbe(selector: String, text: String?): String = """
         (function(){
-          var el = document.querySelector(${JSONObject.quote(selector)});
+          var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+          var el = __f(${JSONObject.quote(selector)});
           var bodyText = document.body ? (document.body.innerText || '') : '';
           var t = ${if (text == null) "null" else JSONObject.quote(text)};
           if (el) {
@@ -111,7 +320,8 @@ object BrowserUseJS {
     /** Set a `<select>` by option label or value, dispatching change+input. */
     fun selectOption(selector: String, want: String): String = """
         (function(){
-          var el = document.querySelector(${JSONObject.quote(selector)});
+          var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+          var el = __f(${JSONObject.quote(selector)});
           if (!el) return JSON.stringify({error:'selector not found'});
           if (el.tagName !== 'SELECT') return JSON.stringify({error:'not a <select>: ' + el.tagName});
           var want = ${JSONObject.quote(want)};
@@ -147,9 +357,12 @@ object BrowserUseJS {
 
     fun click(selector: String): String = """
         (function() {
-            var el = document.querySelector('${jsQuote(selector)}');
-            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
+            var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+            var el = __f('${jsQuote(selector)}');
+            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)} - searched CSS / text= / aria-label= / role= (incl. Shadow DOM + same-origin iframes)'});
             if (el.disabled) return JSON.stringify({error: 'Element is disabled', tag: el.tagName});
+            var info = {tag: el.tagName, text: (el.innerText || el.value || '').substring(0, 100)};
+            try { el.scrollIntoView({block: 'center'}); } catch (e) {}
             var bOpts = {bubbles: true, cancelable: true, view: window};
             var nbOpts = {bubbles: false, cancelable: true, view: window};
             el.dispatchEvent(new MouseEvent('mouseover', bOpts));
@@ -160,7 +373,7 @@ object BrowserUseJS {
             el.click();
             el.dispatchEvent(new MouseEvent('mouseleave', nbOpts));
             el.dispatchEvent(new MouseEvent('mouseout', bOpts));
-            return JSON.stringify({clicked: true, tag: el.tagName, text: (el.innerText || '').substring(0, 100)});
+            return JSON.stringify({clicked: true, tag: info.tag, text: info.text});
         })()
     """.trimIndent()
 
@@ -187,7 +400,8 @@ object BrowserUseJS {
 
     fun type(selector: String, text: String): String = """
         (function() {
-            var el = document.querySelector('${jsQuote(selector)}');
+            var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+            var el = __f('${jsQuote(selector)}');
             if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
             el.focus();
             if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
@@ -237,7 +451,8 @@ object BrowserUseJS {
             val sel = jsQuote(selector)
             return """
                 (function() {
-                    var el = document.querySelector('$sel');
+                    var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+                    var el = __f('$sel');
                     if (!el) return JSON.stringify({error: 'Element not found: $sel'});
                     var innerTextVal = el.innerText || '';
                     var textContentVal = el.textContent || '';
@@ -291,7 +506,7 @@ object BrowserUseJS {
                 var target = null;
                 var scrolledElement = 'window';
                 if (targetSelector) {
-                    target = document.querySelector(targetSelector);
+                    target = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } })(targetSelector);
                     if (!target) return JSON.stringify({error: 'Element not found: ' + targetSelector});
                 } else {
                     var beforeY = window.scrollY;
@@ -336,7 +551,8 @@ object BrowserUseJS {
 
     fun hover(selector: String): String = """
         (function() {
-            var el = document.querySelector('${jsQuote(selector)}');
+            var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+            var el = __f('${jsQuote(selector)}');
             if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
             el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
             el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
@@ -348,23 +564,84 @@ object BrowserUseJS {
 
     fun findElements(selector: String): String = """
         (function() {
-            var els = document.querySelectorAll('${jsQuote(selector)}');
-            var results = [];
-            var limit = Math.min(els.length, 20);
+            var __fa = (window.__MQA || function(s, n){ try { return Array.prototype.slice.call(document.querySelectorAll(s)).slice(0, n || 20); } catch(e) { return []; } });
+            var els = __fa('${jsQuote(selector)}', 20);
             var scrollX = window.scrollX || window.pageXOffset || 0;
             var scrollY = window.scrollY || window.pageYOffset || 0;
-            for (var i = 0; i < limit; i++) {
+            function shortSel(el) {
+              try {
+                if (el.id) return '#' + el.id;
+                var path = [];
+                var cur = el;
+                while (cur && cur !== document.body && cur !== document.documentElement && path.length < 4) {
+                  if (cur.id) { path.unshift('#' + cur.id); break; }
+                  var seg = cur.tagName.toLowerCase();
+                  var parent = cur.parentElement;
+                  if (parent) {
+                    var sameTag = 0, idx = 0;
+                    for (var i = 0; i < parent.children.length; i++) {
+                      if (parent.children[i].tagName === cur.tagName) { sameTag++; if (parent.children[i] === cur) idx = sameTag; }
+                    }
+                    if (sameTag > 1) seg += ':nth-of-type(' + idx + ')';
+                  }
+                  path.unshift(seg);
+                  cur = parent;
+                }
+                return path.slice(-3).join(' > ');
+              } catch (e) { return null; }
+            }
+            function roleOf(el) {
+              var t = el.tagName;
+              var ty = String((el.getAttribute && el.getAttribute('type')) || '').toLowerCase();
+              if (t === 'BUTTON') return 'button';
+              if (t === 'A') return (el.getAttribute && el.getAttribute('href')) ? 'link' : null;
+              if (t === 'SELECT') return 'combobox';
+              if (t === 'TEXTAREA') return 'textbox';
+              if (t === 'INPUT') {
+                if (ty === 'submit' || ty === 'button' || ty === 'reset') return 'button';
+                if (ty === 'checkbox') return 'checkbox';
+                if (ty === 'radio') return 'radio';
+                if (ty === 'search') return 'searchbox';
+                return 'textbox';
+              }
+              if (t === 'IMG') return 'img';
+              return null;
+            }
+            var results = [];
+            for (var i = 0; i < els.length && results.length < 20; i++) {
                 var el = els[i];
                 var rect = el.getBoundingClientRect();
+                var role = '';
+                try { role = String(el.getAttribute('role') || '').toLowerCase(); } catch (e) {}
+                if (!role) role = roleOf(el) || '';
+                var aria = '';
+                try { aria = String(el.getAttribute('aria-label') || ''); } catch (e) {}
+                var ph = '';
+                try { ph = String(el.getAttribute('placeholder') || ''); } catch (e) {}
+                var val = null;
+                try {
+                  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
+                    val = (String(el.type || '').toLowerCase() === 'password') ? '[redacted]' : String(el.value || '').substring(0, 60);
+                  }
+                } catch (e) {}
                 results.push({
                     index: i, tag: el.tagName, id: el.id || null,
-                    className: el.className || null,
-                    text: (el.innerText || '').substring(0, 80),
-                    href: el.href || null,
+                    role: role || null,
+                    ariaLabel: aria || null,
+                    placeholder: ph || null,
+                    value: val,
+                    className: (typeof el.className === 'string' ? el.className : '') || null,
+                    text: (el.innerText || '').substring(0, 80) || null,
+                    href: (el.tagName === 'A' && el.href) ? String(el.href).substring(0, 120) : null,
+                    suggestedSelector: shortSel(el),
                     rect: {x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height), pageX: Math.round(rect.x + scrollX), pageY: Math.round(rect.y + scrollY), visible: rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight && rect.bottom > 0}
                 });
             }
-            return JSON.stringify({count: els.length, shown: limit, elements: results});
+            var out = {count: els.length, shown: results.length, elements: results};
+            if (els.length === 0) {
+              out.hint = "0 matches. Selector accepts CSS, or text=<visible label>, aria-label=<label>, role=button[name=<label>] (searches Shadow DOM + same-origin iframes).";
+            }
+            return JSON.stringify(out);
         })()
     """.trimIndent()
 
@@ -556,6 +833,61 @@ object BrowserUseJS {
             }
             var tree = roots.map(function(r) { return ser(r, 1); });
             return JSON.stringify({backbone: tree, nodeCount: totalNodes, depth: maxD, merged: mergedCount});
+        })()
+    """.trimIndent()
+
+    /** Focus the element matching [selector] (smart selectors understood). */
+    fun focusElement(selector: String): String = """
+        (function(){
+          var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
+          var el = __f('${jsQuote(selector)}');
+          if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
+          try { el.scrollIntoView({block: 'center'}); } catch (e) {}
+          try { el.focus(); } catch (e) {}
+          var ae = document.activeElement;
+          return JSON.stringify({focused: true, tag: el.tagName, activeTag: ae ? ae.tagName : null});
+        })()
+    """.trimIndent()
+
+    /** [T-android-browser-qr] Locate QR-plausible elements (square-ish, >=96px). */
+    fun qrCandidates(): String = """
+        (function(){
+          var out = [];
+          var els = document.querySelectorAll('img,canvas,svg,video');
+          for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            var r = el.getBoundingClientRect();
+            if (r.width < 96 || r.height < 96) continue;
+            var ratio = r.width / r.height;
+            if (ratio < 0.6 || ratio > 1.7) continue;
+            var st = window.getComputedStyle(el);
+            if (st.display === 'none' || st.visibility === 'hidden') continue;
+            var src = '';
+            try { src = String(el.currentSrc || el.src || '').substring(0, 200); } catch (e) {}
+            var alt = '';
+            try { alt = String(el.getAttribute('alt') || ''); } catch (e) {}
+            out.push({tag: el.tagName, x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), src: src, alt: alt});
+          }
+          out.sort(function(a, b){ return (b.w * b.h) - (a.w * a.h); });
+          out = out.slice(0, 6);
+          return JSON.stringify({count: out.length, candidates: out});
+        })()
+    """.trimIndent()
+
+    /** [T-android-browser-network-idle] Page-side network/activity probe. */
+    fun netIdleProbe(): String = """
+        (function(){
+          var st = window.__minis_net_state || null;
+          var textLen = 0; var hasMedia = false;
+          try { textLen = document.body ? String(document.body.innerText || '').length : 0; } catch (e) {}
+          try { hasMedia = (document.images && document.images.length > 0) || !!document.querySelector('canvas,video,svg'); } catch (e) {}
+          return JSON.stringify({
+            pending: st ? st.pending : -1,
+            lastAgo: st ? (Date.now() - st.last) : -1,
+            readyState: document.readyState,
+            textLen: textLen,
+            hasMedia: hasMedia
+          });
         })()
     """.trimIndent()
 

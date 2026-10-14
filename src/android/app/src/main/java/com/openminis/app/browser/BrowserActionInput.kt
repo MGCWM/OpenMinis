@@ -58,6 +58,15 @@ data class BrowserActionInput(
     /** Drag destination (viewport CSS px) for gesture=drag. */
     val toX: Int? = null,
     val toY: Int? = null,
+    /**
+     * [T-android-browser-smart-selectors-2026-10] press_key: the key to
+     * press — a base key optionally combined with modifiers, run through
+     * WebView.dispatchKeyEvent as a real key event (e.g. "Enter", "Tab",
+     * "ctrl+Enter", "shift+Tab", "ArrowDown").
+     */
+    val key: String? = null,
+    /** Downscale factor for screenshot (0.1–1.5; 1.0 = native size). */
+    val scale: Double? = null,
 ) {
     companion object {
         fun parse(json: String): BrowserActionInput? {
@@ -98,6 +107,8 @@ data class BrowserActionInput(
                     gesture = obj.optString("gesture").ifEmpty { null },
                     toX = if (obj.has("to_x")) obj.optInt("to_x") else null,
                     toY = if (obj.has("to_y")) obj.optInt("to_y") else null,
+                    key = obj.optString("key").ifEmpty { null },
+                    scale = if (obj.has("scale")) obj.optDouble("scale") else null,
                 )
             } catch (_: Exception) {
                 null
