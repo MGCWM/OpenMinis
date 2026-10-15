@@ -2346,6 +2346,9 @@ class BrowserUseManager(
     private fun installEarlyScripts() {
         val net = BrowserUseJS.EARLY_NET_INSTRUMENTATION_JS
         val helpers = BrowserUseJS.QUERY_HELPERS_JS
+        // [T-android-viewport-guard-2026-10] Third script: rewrites malformed
+        // viewport metas (initial-scale=0) before the page can be clamped.
+        val vpGuard = BrowserUseJS.VIEWPORT_GUARD_JS
         try {
             if (androidx.webkit.WebViewFeature.isFeatureSupported(
                     androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT,
@@ -2353,15 +2356,16 @@ class BrowserUseManager(
             ) {
                 androidx.webkit.WebViewCompat.addDocumentStartJavaScript(webView, net, setOf("*"))
                 androidx.webkit.WebViewCompat.addDocumentStartJavaScript(webView, helpers, setOf("*"))
-                Log.d(TAG, "net + query instrumentation registered at document start")
+                androidx.webkit.WebViewCompat.addDocumentStartJavaScript(webView, vpGuard, setOf("*"))
+                Log.d(TAG, "net + query + viewport instrumentation registered at document start")
                 return
             }
         } catch (t: Throwable) {
             Log.w(TAG, "document-start script unsupported: ${t.message}")
         }
-        // Fallback: inject on page start (both scripts are idempotent).
-        earlyScriptFallback = net + "\n" + helpers
-        Log.d(TAG, "net + query instrumentation registered via page-start fallback")
+        // Fallback: inject on page start (all three scripts are idempotent).
+        earlyScriptFallback = net + "\n" + helpers + "\n" + vpGuard
+        Log.d(TAG, "net + query + viewport instrumentation registered via page-start fallback")
     }
 
     private fun saveBitmapToFile(bitmap: Bitmap, prefix: String, quality: Int = SCREENSHOT_QUALITY): File {
