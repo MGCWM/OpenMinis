@@ -2098,7 +2098,11 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     private fun substituteValue(v: Any?, params: JSONObject): Any? = when (v) {
         is String -> {
-            var s = v
+            // NOTE: the explicit type is load-bearing. `var s = v` (inferred from
+            // the smart-cast) plus reassignment inside the loop below trips a K2
+            // frontend quirk: `s.replace(...)` then fails to resolve. Keep the
+            // annotation. (Reproduced locally and in CI, both compilers.)
+            var s: String = v
             if (s.contains("{{")) {
                 val keys = params.keys()
                 while (keys.hasNext()) {
