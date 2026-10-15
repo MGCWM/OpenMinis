@@ -1051,6 +1051,35 @@ object BrowserUseJS {
         })()
     """.trimIndent()
 
+    /**
+     * [T-android-page-diff-2026-10] Visible-text + structure fingerprint for
+     * before/after comparisons. Lines are whitespace-collapsed and empty lines
+     * dropped so a diff is stable across reflows; capped at 30k chars.
+     */
+    fun pageFingerprint(): String = """
+        (function(){
+          var out = [];
+          try {
+            var body = document.body;
+            var raw = body ? String(body.innerText || body.textContent || '') : '';
+            var lines = raw.split('\n');
+            for (var i = 0; i < lines.length; i++) {
+              var l = lines[i].replace(/\s+/g, ' ').trim();
+              if (l) out.push(l);
+            }
+          } catch (e) {}
+          var text = out.join('\n');
+          if (text.length > 30000) text = text.slice(0, 30000);
+          var a = 0; var b = 0; var im = 0;
+          try { a = document.querySelectorAll('a').length; } catch (e) {}
+          try { b = document.querySelectorAll('button,input[type=submit]').length; } catch (e) {}
+          try { im = document.images.length; } catch (e) {}
+          var h = 0;
+          for (var k = 0; k < text.length; k += 7) { h = (h * 31 + text.charCodeAt(k)) | 0; }
+          return JSON.stringify({len: text.length, h: h, a: a, b: b, i: im, text: text});
+        })()
+    """.trimIndent()
+
     // -- Fetch (async IIFE) --
 
     fun fetch(url: String): String {

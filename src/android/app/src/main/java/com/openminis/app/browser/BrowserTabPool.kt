@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import com.openminis.app.R
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.Date
@@ -198,6 +199,30 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     private val appliedConfigs = mutableMapOf<Int, AppliedConfig>()
 
     private var lastTabStateSaveMs = 0L
+
+    // ── Macros: record / replay  [T-android-browser-macros-2026-10] ──
+    //
+    // Every action flows through this one executor and its input is already
+    // wire-format JSON — so record that JSON and replay it through the same
+    // route. Steps deliberately drop `tab_id` (ids recorded now could
+    // mis-route at replay time); replay targets whatever tab the flow selects.
+    private class SavedMacro(val name: String, val steps: MutableList<JSONObject>, var updatedAt: Long)
+    private val macros = mutableMapOf<String, SavedMacro>()
+    private var macrosLoaded = false
+    private var recording = false
+    private var recordingName = "default"
+    private val recordBuffer = mutableListOf<JSONObject>()
+    private var replaying = false
+    private val replayStack = mutableSetOf<String>()
+
+    /** Read-only actions that would only add noise to a recorded macro. */
+    private val recordSkipActions = setOf(
+        BrowserAction.GET_TEXT, BrowserAction.GET_READABLE, BrowserAction.GET_PAGE_INFO,
+        BrowserAction.GET_BACKBONE, BrowserAction.FIND_ELEMENTS, BrowserAction.GET_NETWORK_LOG,
+        BrowserAction.GET_RESPONSE_LOG, BrowserAction.GET_CONSOLE_LOGS, BrowserAction.GET_COOKIES,
+        BrowserAction.SCREENSHOT, BrowserAction.EXPORT_PDF, BrowserAction.LIST_TABS,
+        BrowserAction.SCROLL_AND_COLLECT, BrowserAction.EXTRACT_QR,
+    )
 
     private var sessionId: String? = null
     private val savedURLs = mutableMapOf<Int, String>()
@@ -423,6 +448,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     fun setSession(sessionId: String) {
         this.sessionId = sessionId
+        // Macros are per-chat too; drop the cache so the new session's file loads.
+        macros.clear()
+        macrosLoaded = false
         loadSavedState()
     }
 
@@ -706,6 +734,15 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         singleTab: Boolean = false,
         owner: String? = null,
     ): BrowserActionResult {
+        // [T-android-browser-macros-2026-10] Record hook. Sits above ALL
+        // routing so every action lands in the buffer; replay sets `replaying`
+        // to keep its own expansion out of the recording.
+        if (recording && !replaying &&
+            input.action != BrowserAction.RECORD_START && input.action != BrowserAction.RECORD_STOP &&
+            input.action !in recordSkipActions
+        ) {
+            recordBuffer.add(input.toRecordJson())
+        }
         // [T-android-browser-tab-ownership-newtab] The ownership check is
         // PER ACTION, not a blanket pre-check, matching iOS
         // (BrowserTabPool.swift:823-836 handles newTab / listTabs before any
@@ -746,6 +783,11 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             BrowserAction.SET_VIEWPORT -> handleSetViewport(input)
             BrowserAction.SET_USER_AGENT -> handleSetUserAgent(input)
             BrowserAction.RESTORE_TABS -> restoreTabs(owner)
+            BrowserAction.RECORD_START -> recordStart(input)
+            BrowserAction.RECORD_STOP -> recordStop()
+            BrowserAction.RUN_MACRO -> runMacro(input, singleTab, owner)
+            BrowserAction.LIST_MACROS -> listMacros()
+            BrowserAction.KEEP_ALIVE -> keepAlive(input)
             else -> {
                 ownershipViolation(input.tabId)?.let { return it }
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit
@@ -1923,6 +1965,334 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             text = "Viewport set to ${w}x$h (session override" +
                 (if (origin != null) "; remembered for $origin — re-applies on revisit, survives restarts" else "") + ")",
         )
+    }
+
+    // -- Macros: record / replay  [T-android-browser-macros-2026-10] --
+
+    private suspend fun recordStart(input: BrowserActionInput): BrowserActionResult {
+        val name = input.text?.trim()?.takeIf { it.isNotBlank() } ?: "default"
+        recording = true
+        recordingName = name
+        recordBuffer.clear()
+        return BrowserActionResult(
+            text = "Recording into macro \"$name\". Perform the steps, then call record_stop. " +
+                "Read-only actions (get_text, find_elements, screenshots, logs, cookies) are not recorded; " +
+                "recorded strings may contain {{placeholders}} for later run_macro params.",
+        )
+    }
+
+    private suspend fun recordStop(): BrowserActionResult {
+        if (!recording) {
+            return BrowserActionResult(text = "record_stop: wasn't recording (call record_start first).", success = false)
+        }
+        recording = false
+        val name = recordingName
+        if (recordBuffer.isEmpty()) {
+            return BrowserActionResult(text = "Recording stopped — 0 steps captured, macro \"$name\" unchanged.")
+        }
+        val steps = recordBuffer.toList()
+        recordBuffer.clear()
+        ensureMacrosLoaded()
+        macros[name] = SavedMacro(name, steps.toMutableList(), System.currentTimeMillis())
+        saveMacros()
+        val preview = steps.mapIndexed { i, s ->
+            "  ${i + 1}. ${s.optString("action")} ${macroStepHint(s)}".trimEnd()
+        }.joinToString("\n").take(1600)
+        return BrowserActionResult(
+            text = "Recorded macro \"$name\": ${steps.size} step(s):\n$preview\n\n" +
+                "Replay: run_macro with text=\"$name\" (optional body = JSON params for {{placeholders}}).",
+        )
+    }
+
+    private fun macroStepHint(step: JSONObject): String {
+        val hint = step.optString("selector").ifEmpty {
+            step.optString("url").ifEmpty {
+                step.optString("text").ifEmpty { step.optString("key") }
+            }
+        }
+        return if (hint.isBlank()) "" else "— " + hint.take(48)
+    }
+
+    private suspend fun listMacros(): BrowserActionResult {
+        ensureMacrosLoaded()
+        if (macros.isEmpty()) {
+            return BrowserActionResult(text = "No macros saved for this chat yet (record_start → steps → record_stop).")
+        }
+        val lines = macros.values.sortedByDescending { it.updatedAt }.joinToString("\n") { m ->
+            "  \"${m.name}\": ${m.steps.size} step(s) — " +
+                m.steps.take(4).joinToString(", ") { it.optString("action") } +
+                (if (m.steps.size > 4) ", …" else "")
+        }
+        return BrowserActionResult(text = "Saved macros:\n$lines")
+    }
+
+    private suspend fun runMacro(input: BrowserActionInput, singleTab: Boolean, owner: String?): BrowserActionResult {
+        val name = input.text?.trim()?.takeIf { it.isNotBlank() } ?: "default"
+        ensureMacrosLoaded()
+        val macro = macros[name] ?: return BrowserActionResult.error(
+            "run_macro: no macro named \"$name\" (available: " + macros.keys.joinToString(", ").ifEmpty { "none" } + ")",
+        )
+        if (name in replayStack) {
+            return BrowserActionResult.error("run_macro: recursive call to \"$name\" stopped")
+        }
+        val params = try {
+            JSONObject(input.body.takeIf { !it.isNullOrBlank() } ?: "{}")
+        } catch (_: Exception) {
+            return BrowserActionResult.error("run_macro: body must be a JSON object of params, e.g. {\"phone\":\"13800000000\"}")
+        }
+        val steps = macro.steps.toList()
+        val sb = StringBuilder()
+        var done = 0
+        var failedAt = -1
+        val deadline = System.currentTimeMillis() + 15 * 60_000L
+        val prevReplaying = replaying
+        replaying = true
+        replayStack.add(name)
+        try {
+            for ((i, step) in steps.withIndex()) {
+                if (System.currentTimeMillis() > deadline) {
+                    sb.appendLine("  budget exceeded after ${done} step(s) — stopping")
+                    failedAt = i
+                    break
+                }
+                val resolved = substituteParams(step, params)
+                val stepInput = BrowserActionInput.parse(resolved.toString())
+                if (stepInput == null) {
+                    sb.appendLine("  ${i + 1}. parse failed — ${resolved.toString().take(160)}")
+                    failedAt = i
+                    break
+                }
+                val r = execute(stepInput, singleTab = singleTab, owner = owner)
+                if (r.success) {
+                    done++
+                    sb.appendLine("  ${i + 1}. ${stepInput.action.value} ✓")
+                } else {
+                    sb.appendLine("  ${i + 1}. ${stepInput.action.value} ✗ " + r.text.lineSequence().first().take(140))
+                    failedAt = i
+                    break
+                }
+                kotlinx.coroutines.delay(120)
+            }
+        } finally {
+            replaying = prevReplaying
+            replayStack.remove(name)
+        }
+        val ok = failedAt < 0
+        val head = if (ok) {
+            "Macro \"$name\": all ${steps.size} step(s) completed."
+        } else {
+            "Macro \"$name\": stopped at step ${failedAt + 1}/${steps.size} ($done ok before it). Fix that step's state (or re-record) and rerun."
+        }
+        return BrowserActionResult(text = head + "\n" + sb.toString().trimEnd(), success = ok)
+    }
+
+    private fun substituteParams(step: JSONObject, params: JSONObject): JSONObject {
+        val out = JSONObject()
+        val keys = step.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            out.put(k, substituteValue(step.opt(k), params))
+        }
+        return out
+    }
+
+    private fun substituteValue(v: Any?, params: JSONObject): Any? = when (v) {
+        is String -> {
+            var s = v
+            if (s.contains("{{")) {
+                val keys = params.keys()
+                while (keys.hasNext()) {
+                    val pk = keys.next()
+                    s = s.replace("{{" + pk + "}}", params.optString(pk))
+                }
+            }
+            s
+        }
+        is JSONArray -> {
+            val arr = JSONArray()
+            for (i in 0 until v.length()) arr.put(substituteValue(v.opt(i), params))
+            arr
+        }
+        is JSONObject -> substituteParams(v, params)
+        else -> v
+    }
+
+    private fun macroFilePath(): File? {
+        val sid = sessionId ?: return null
+        val dir = File(context.filesDir, "browser_macros")
+        dir.mkdirs()
+        return File(dir, "$sid.json")
+    }
+
+    private fun ensureMacrosLoaded() {
+        if (macrosLoaded) return
+        macrosLoaded = true
+        try {
+            val f = macroFilePath() ?: return
+            if (!f.exists()) return
+            val root = JSONObject(f.readText())
+            val book = root.optJSONObject("macros") ?: return
+            val names = book.keys()
+            while (names.hasNext()) {
+                val n = names.next()
+                val m = book.optJSONObject(n) ?: continue
+                val arr = m.optJSONArray("steps") ?: continue
+                val steps = mutableListOf<JSONObject>()
+                for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { steps.add(it) }
+                macros[n] = SavedMacro(n, steps, m.optLong("updatedAt", 0L))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load macros: ${e.message}")
+        }
+    }
+
+    private fun saveMacros() {
+        try {
+            val f = macroFilePath() ?: return
+            val root = JSONObject()
+            val book = JSONObject()
+            for (m in macros.values) {
+                val o = JSONObject()
+                o.put("updatedAt", m.updatedAt)
+                val arr = JSONArray()
+                for (s in m.steps) arr.put(s)
+                o.put("steps", arr)
+                book.put(m.name, o)
+            }
+            root.put("macros", book)
+            f.writeText(root.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save macros: ${e.message}")
+        }
+    }
+
+    // -- Keep-alive  [T-android-browser-keepalive-2026-10] --
+
+    private suspend fun keepAlive(input: BrowserActionInput): BrowserActionResult {
+        val target = input.url?.trim()?.takeIf { it.isNotBlank() }
+            ?: activeTab()?.manager?.currentURL?.value?.takeIf { it.orEmpty().startsWith("http") }
+            ?: return BrowserActionResult.error("keep_alive requires 'url' (or an open http(s) page)")
+        if (!target.startsWith("http://") && !target.startsWith("https://")) {
+            return BrowserActionResult.error("keep_alive: 'url' must be http(s)")
+        }
+        val intervalMin = (input.amount ?: 30).coerceIn(5, 24 * 60)
+        val fires = (input.limit ?: 20).coerceIn(1, 200)
+        val cookie = withContext(Dispatchers.Main) {
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(target) }.getOrNull()
+        }
+        val ua = initialUserAgent()
+        val ping = withContext(Dispatchers.IO) {
+            try {
+                val conn = java.net.URL(target).openConnection() as java.net.HttpURLConnection
+                try {
+                    conn.connectTimeout = 15_000
+                    conn.readTimeout = 15_000
+                    conn.instanceFollowRedirects = true
+                    conn.setRequestProperty("Accept", "*/*")
+                    if (!ua.isNullOrEmpty()) conn.setRequestProperty("User-Agent", ua)
+                    if (!cookie.isNullOrEmpty()) conn.setRequestProperty("Cookie", cookie)
+                    val code = conn.responseCode
+                    val finalUrl = conn.url?.toString() ?: target
+                    var bytes = 0
+                    try {
+                        val stream = if (code >= 400) conn.errorStream else conn.inputStream
+                        if (stream != null) {
+                            stream.use { s ->
+                                val buf = ByteArray(65536)
+                                var n = s.read(buf)
+                                while (n > 0 && bytes < 10 * 1024 * 1024) {
+                                    bytes += n
+                                    n = s.read(buf)
+                                }
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                    Triple(code, finalUrl, bytes)
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (t: Throwable) {
+                null
+            }
+        }
+        val sb = StringBuilder()
+        sb.appendLine("keep_alive — $target")
+        if (ping == null) {
+            sb.appendLine("  Ping failed (network error / unreachable). Cookie jar: " + (if (cookie.isNullOrEmpty()) "empty" else "has cookies"))
+        } else {
+            val redirected = ping.second != target
+            sb.appendLine("  Ping: HTTP ${ping.first} · ${ping.third} B" + (if (redirected) " · landed on ${ping.second.take(90)}" else ""))
+            if (ping.first in 300..399 || ping.second.contains("login", ignoreCase = true)) {
+                sb.appendLine("  Warning: looks like a redirect towards a login — the session may be (or soon be) expired.")
+            }
+        }
+        val pairs = parseCookiePairs(cookie)
+        val envPath = try {
+            writeCookieEnvFile(target, pairs)
+        } catch (_: Throwable) {
+            null
+        }
+        if (envPath != null && pairs.isNotEmpty()) {
+            val host = runCatching { java.net.URI(target).host }.getOrNull() ?: "site"
+            sb.appendLine("  ${pairs.size} cookie(s) exported → $envPath")
+            sb.appendLine("  Arm periodic pings (every ${intervalMin}m × $fires). Each fire reports an HTTP code; a non-200 means the session expired — re-login, then re-run get_cookies and keep_alive to refresh:")
+            sb.append(
+                "minis-scheduled create --label 'keep-alive $host' --interval ${intervalMin}m --count $fires --command-timeout 2m " +
+                    "--command '. $envPath && curl -s -o /dev/null -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $target'",
+            )
+        } else {
+            sb.appendLine("  (cookie export unavailable — the scheduled ping command was not composed)")
+        }
+        return BrowserActionResult(text = sb.toString().trimEnd())
+    }
+
+    private fun parseCookiePairs(header: String?): List<Pair<String, String>> {
+        if (header.isNullOrBlank()) return emptyList()
+        return header.split(";").mapNotNull { part ->
+            val t = part.trim()
+            val eq = t.indexOf('=')
+            if (eq <= 0) null else t.substring(0, eq) to t.substring(eq + 1)
+        }
+    }
+
+    private fun poolShQuote(s: String): String = "'" + s.replace("'", "'\\''") + "'"
+
+    private fun poolEnvName(name: String): String {
+        val cleaned = buildString {
+            for (ch in name.uppercase(java.util.Locale.US)) {
+                append(if (ch.isLetterOrDigit() || ch == '_') ch else '_')
+            }
+        }
+        return if (cleaned.isEmpty() || cleaned[0].isDigit()) "_$cleaned" else cleaned
+    }
+
+    private fun writeCookieEnvFile(url: String, pairs: List<Pair<String, String>>): String? {
+        val sid = sessionId?.takeIf { it.isNotBlank() } ?: return null
+        return try {
+            val dir = com.openminis.app.sandbox.SessionMounts.sessionDir(context.filesDir, sid, "offloads")
+            dir.mkdirs()
+            val file = File(dir, "keepalive_cookies_${System.currentTimeMillis() / 1000}.sh")
+            val sb = StringBuilder()
+            sb.append("#!/bin/sh\n")
+            sb.append("# keep-alive cookies — ").append(url).append('\n')
+            sb.append("# source me:  . /var/minis/offloads/").append(file.name).append('\n')
+            sb.append("export MINIS_COOKIE_HEADER=")
+                .append(poolShQuote(pairs.joinToString("; ") { (n, v) -> "$n=$v" })).append('\n')
+            for ((n, v) in pairs) {
+                sb.append("export MINIS_COOKIE_").append(poolEnvName(n)).append('=').append(poolShQuote(v)).append('\n')
+            }
+            file.writeText(sb.toString())
+            try {
+                file.setReadable(true, true)
+                file.setWritable(true, true)
+            } catch (_: Throwable) {
+            }
+            "/var/minis/offloads/${file.name}"
+        } catch (t: Throwable) {
+            Log.w(TAG, "keep-alive cookie export failed: ${t.message}")
+            null
+        }
     }
 
     // -- Per-origin overrides + tab restore  [T-android-browser-origin-overrides-2026-10] --

@@ -57,7 +57,13 @@ enum class BrowserAction(val value: String) {
     REPLAY_REQUEST("replay_request"),
     COPY_AS_CURL("copy_as_curl"),
     FILL_FORM("fill_form"),
-    RESTORE_TABS("restore_tabs");
+    RESTORE_TABS("restore_tabs"),
+    // [T-android-browser-macros / keep-alive 2026-10]
+    RECORD_START("record_start"),
+    RECORD_STOP("record_stop"),
+    RUN_MACRO("run_macro"),
+    LIST_MACROS("list_macros"),
+    KEEP_ALIVE("keep_alive");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action

@@ -436,6 +436,11 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
             "copy_as_curl"       -> "browser: copy as cURL"
             "fill_form"          -> "browser: fill form"
             "restore_tabs"       -> "browser: restore tabs"
+            "record_start"       -> "browser: record start"
+            "record_stop"        -> "browser: record stop"
+            "run_macro"          -> "browser: run macro"
+            "list_macros"        -> "browser: list macros"
+            "keep_alive"         -> "browser: keep-alive"
             "find"               -> "browser: find ${txt ?: sel ?: ""}".trim()
             else                 -> "browser: $action"
         }

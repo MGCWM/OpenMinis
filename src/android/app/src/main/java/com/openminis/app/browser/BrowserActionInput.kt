@@ -86,6 +86,59 @@ data class BrowserActionInput(
     /** get_network_log / get_response_log: page size. */
     val limit: Int? = null,
 ) {
+
+    /**
+     * [T-android-browser-macros-2026-10] Re-serialize this input for the macro
+     * recorder — wire format, so a recorded step replays through [parse].
+     * Deliberately omits `tab_id`: a macro replays onto whatever tab the flow
+     * itself selects (stale ids recorded now would mis-route at replay time).
+     */
+    fun toRecordJson(): JSONObject {
+        val o = JSONObject()
+        o.put("action", action.value)
+        url?.let { o.put("url", it) }
+        selector?.let { o.put("selector", it) }
+        text?.let { o.put("text", it) }
+        coordinateX?.let { o.put("coordinate_x", it) }
+        coordinateY?.let { o.put("coordinate_y", it) }
+        direction?.let { o.put("direction", it.value) }
+        amount?.let { o.put("amount", it) }
+        script?.let { o.put("script", it) }
+        userAgent?.let { o.put("user_agent", it.value) }
+        maxDepth?.let { o.put("max_depth", it) }
+        viewportWidth?.let { o.put("viewport_width", it) }
+        viewportHeight?.let { o.put("viewport_height", it) }
+        if (reset) o.put("reset", true)
+        keywords?.let { o.put("keywords", JSONArray(it)) }
+        if (fuzzy) o.put("fuzzy", true)
+        itemSelector?.let { o.put("item_selector", it) }
+        scrollCount?.let { o.put("scroll_count", it) }
+        timeoutMs?.let { o.put("timeout", it) }
+        if (fullPage) o.put("full_page", true)
+        cookies?.let { list ->
+            val arr = JSONArray()
+            for (c in list) arr.put(JSONObject(c))
+            o.put("cookies", arr)
+        }
+        files?.let { o.put("files", JSONArray(it)) }
+        logLevel?.let { o.put("log_level", it) }
+        filter?.let { o.put("filter", it) }
+        gesture?.let { o.put("gesture", it) }
+        toX?.let { o.put("to_x", it) }
+        toY?.let { o.put("to_y", it) }
+        key?.let { o.put("key", it) }
+        scale?.let { o.put("scale", it) }
+        index?.let { o.put("index", it) }
+        method?.let { o.put("method", it) }
+        body?.let { o.put("body", it) }
+        headers?.let { o.put("headers", it) }
+        fields?.let { o.put("fields", it) }
+        if (submit == true) o.put("submit", true)
+        if (full == true) o.put("full", true)
+        offset?.let { o.put("offset", it) }
+        limit?.let { o.put("limit", it) }
+        return o
+    }
     companion object {
         fun parse(json: String): BrowserActionInput? {
             return try {

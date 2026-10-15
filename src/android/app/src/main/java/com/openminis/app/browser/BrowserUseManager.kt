@@ -62,6 +62,17 @@ class BrowserUseManager(
         private const val DEFAULT_DOM_STABLE_TIMEOUT_MS = 5_000
 
         /**
+         * [T-android-page-diff-2026-10] Actions whose result gets a before/after
+         * page diff appended. "No visible change" is often the single most
+         * useful signal (a click that landed on nothing). Navigate is excluded
+         * (a new page differs entirely); scroll/hover/type are excluded as
+         * noise.
+         */
+        private val PAGE_DIFF_ACTIONS = setOf(
+            BrowserAction.CLICK, BrowserAction.PRESS_KEY, BrowserAction.GESTURE, BrowserAction.FILL_FORM,
+        )
+
+        /**
          * Cap full_page screenshot stretched viewport at 32768 px. Above this,
          * Bitmap.createBitmap risks OOM (e.g. 32768 × ~1130 px × 4 B/ARGB ≈ 144 MB
          * at desktop 1280 CSS × 2.75 density). Pages taller than the cap are
@@ -1020,6 +1031,9 @@ class BrowserUseManager(
             )
         }
         val prevUrl = withContext(Dispatchers.Main) { webView.url }
+        // [T-android-page-diff-2026-10] Fingerprint the page before a
+        // diff-tracked action so the result can report what actually changed.
+        val beforeFingerprint = if (input.action in PAGE_DIFF_ACTIONS) capturePageFingerprint() else null
         var result: BrowserActionResult = when (input.action) {
             BrowserAction.NAVIGATE -> navigate(input.url)
             BrowserAction.SCREENSHOT -> return screenshot(
@@ -1088,11 +1102,27 @@ class BrowserUseManager(
             BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS,
             BrowserAction.RESTORE_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
+            BrowserAction.RECORD_START, BrowserAction.RECORD_STOP, BrowserAction.RUN_MACRO,
+            BrowserAction.LIST_MACROS, BrowserAction.KEEP_ALIVE ->
+                return BrowserActionResult.error("Macro + keep-alive actions must be routed through BrowserTabPool")
         }
 
         // Auto-capture screenshot after visual-change actions
         if (result.success && BrowserAction.visualChangeActions.contains(input.action)) {
             result = attachSnapshot(result)
+        }
+
+        // [T-android-page-diff-2026-10] What actually changed? Compare against
+        // the fingerprint taken before the action and append a short diff.
+        if (beforeFingerprint != null && result.success && input.action in PAGE_DIFF_ACTIONS) {
+            val newUrl = withContext(Dispatchers.Main) { webView.url }
+            val sameUrl = prevUrl == null || newUrl == null ||
+                prevUrl.substringBefore("#") == newUrl.substringBefore("#")
+            if (sameUrl) {
+                capturePageFingerprint()?.let { after ->
+                    result = result.copy(text = result.text + "\n" + computePageDiff(beforeFingerprint, after))
+                }
+            }
         }
 
         // Detect URL change after visual-change actions (ignore hash-only changes)
@@ -1123,6 +1153,56 @@ class BrowserUseManager(
             Log.w(TAG, "Auto-snapshot failed: ${e.message}")
             result
         }
+    }
+
+    // -- [T-android-page-diff-2026-10] Before/after page diff --
+
+    private suspend fun capturePageFingerprint(): JSONObject? {
+        return try {
+            val raw = withTimeoutOrNull(1_500L) {
+                evaluateJavascript(BrowserUseJS.pageFingerprint())
+            } ?: return null
+            JSONObject(raw)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun computePageDiff(before: JSONObject, after: JSONObject): String {
+        fun counter(jo: JSONObject, k: String) = jo.optInt(k)
+        val bText = before.optString("text")
+        val aText = after.optString("text")
+        val sameCounts = counter(before, "a") == counter(after, "a") &&
+            counter(before, "b") == counter(after, "b") &&
+            counter(before, "i") == counter(after, "i")
+        if (bText == aText && sameCounts) {
+            return "Page diff: no visible change (same text, links, buttons, images) — the action had no observable effect."
+        }
+        val b = bText.split("\n")
+        val a = aText.split("\n")
+        var p = 0
+        while (p < b.size && p < a.size && b[p] == a[p]) p++
+        var s = 0
+        while (s < b.size - p && s < a.size - p && b[b.size - 1 - s] == a[a.size - 1 - s]) s++
+        val removed = b.subList(p, b.size - s)
+        val added = a.subList(p, a.size - s)
+        val sb = StringBuilder("Page diff: ")
+        sb.append('+').append(added.size).append(" / -").append(removed.size).append(" line(s)")
+        val da = counter(after, "a") - counter(before, "a")
+        val db = counter(after, "b") - counter(before, "b")
+        val di = counter(after, "i") - counter(before, "i")
+        val deltas = mutableListOf<String>()
+        if (da != 0) deltas.add((if (da > 0) "+" else "") + da + " links")
+        if (db != 0) deltas.add((if (db > 0) "+" else "") + db + " buttons")
+        if (di != 0) deltas.add((if (di > 0) "+" else "") + di + " images")
+        if (deltas.isNotEmpty()) sb.append("  (").append(deltas.joinToString(", ")).append(')')
+        for (l in added.take(3)) sb.append("\n  + ").append(l.take(120))
+        if (added.size > 3) sb.append("\n  + …").append(added.size - 3).append(" more")
+        for (l in removed.take(2)) sb.append("\n  - ").append(l.take(120))
+        if (removed.size > 2) sb.append("\n  - …").append(removed.size - 2).append(" more")
+        return sb.toString().take(700)
     }
 
     // -- Navigate --
