@@ -1295,6 +1295,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // [T-android-browser-origin-overrides-2026-10] Navigation hook + seed
         // for the per-origin override applier.
         manager.onPageChanged = { url -> handleTabPageChanged(id, url) }
+        manager.onNewTabRequest = { url -> openBlankLinkTab(url) }
         appliedConfigs[id] = AppliedConfig(null, initialUserAgent(), vpW, vpH)
 
         val tab = Tab(id = id, manager = manager)
@@ -1472,6 +1473,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         manager.onCloseWindow = { handleCloseWindow(manager) }
         wireDownloadHandlers(manager)
         manager.onPageChanged = { url -> handleTabPageChanged(id, url) }
+        manager.onNewTabRequest = { url -> openBlankLinkTab(url) }
         appliedConfigs[id] = AppliedConfig(null, initialUserAgent(), vpW, vpH)
 
         val tab = Tab(id = id, manager = manager)
@@ -2243,6 +2245,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             sb.appendLine("  Arm periodic pings (every ${intervalMin}m × $fires). Each fire reports an HTTP code; a non-200 means the session expired — re-login, then re-run get_cookies and keep_alive to refresh:")
             sb.append(
                 "minis-scheduled create --label 'keep-alive $host' --interval ${intervalMin}m --count $fires --command-timeout 2m " +
+                    "--prompt 'keep-alive $host：看下面的 HTTP 状态码；不是 200 就说明会话可能过期，提醒用户重新登录' " +
                     "--command '. $envPath && curl -s -o /dev/null -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $target'",
             )
         } else {
@@ -2296,6 +2299,23 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         } catch (t: Throwable) {
             Log.w(TAG, "keep-alive cookie export failed: ${t.message}")
             null
+        }
+    }
+
+    /**
+     * [T-android-blank-link-2026-10] A synthetic click on a target=_blank link
+     * is swallowed by the popup blocker (no user gesture). Open it as a real
+     * background tab instead of losing the navigation entirely.
+     */
+    private fun openBlankLinkTab(url: String) {
+        evictionScope.launch(Dispatchers.Main) {
+            runCatching {
+                val tabs = _tabs.value.toMutableList()
+                val tab = createTab(tabs, url, null)
+                if (tab != null) {
+                    Log.i(TAG, "blank-link opened as tab ${tab.id}: ${url.take(80)}")
+                }
+            }.onFailure { Log.w(TAG, "blank-link tab failed: ${it.message}") }
         }
     }
 

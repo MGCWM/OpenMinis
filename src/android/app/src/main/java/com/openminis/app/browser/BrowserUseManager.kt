@@ -17,8 +17,11 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -412,6 +415,13 @@ class BrowserUseManager(
     var onPageChanged: ((String?) -> Unit)? = null
 
     /**
+     * [T-android-blank-link-2026-10] A clicked anchor wanted a new window
+     * (target=_blank) but the popup blocker would swallow it; wire this to have
+     * the pool open the URL in a real (background) tab instead.
+     */
+    var onNewTabRequest: ((String) -> Unit)? = null
+
+    /**
      * Callback when the page triggers a file download over http/https
      * (Content-Disposition attachment, <a download>, unrenderable MIME type).
      * TabPool hooks this and streams the URL into the session workspace.
@@ -706,6 +716,13 @@ class BrowserUseManager(
                 // [T-android-browser-origin-overrides-2026-10] Keep the saved-tab
                 // set fresh; the override applier is a per-origin no-op here.
                 onPageChanged?.invoke(url)
+                // [T-android-viewport-guard-2026-10] Post-load sanity check for
+                // malformed viewport metas (fires once per load).
+                view.postDelayed({
+                    postLoadScope.launch {
+                        runCatching { recoverBrokenViewportIfNeeded() }
+                    }
+                }, 450)
                 _canGoBack.value = view.canGoBack()
                 _canGoForward.value = view.canGoForward()
                 navigationDeferred?.complete(Unit)
@@ -1119,6 +1136,12 @@ class BrowserUseManager(
             val sameUrl = prevUrl == null || newUrl == null ||
                 prevUrl.substringBefore("#") == newUrl.substringBefore("#")
             if (sameUrl) {
+                // [T-android-diff-async-settle-2026-10] Submit clicks often fire
+                // an async POST and update the page 0.5–2s later; fingerprinting
+                // immediately reported "no visible change" for three separate
+                // sites whose submissions all succeeded. Wait for a bounded
+                // settle (min beat + network drain) before the after-shot.
+                awaitPageSettleForDiff()
                 capturePageFingerprint()?.let { after ->
                     result = result.copy(text = result.text + "\n" + computePageDiff(beforeFingerprint, after))
                 }
@@ -1203,6 +1226,72 @@ class BrowserUseManager(
         for (l in removed.take(2)) sb.append("\n  - ").append(l.take(120))
         if (removed.size > 2) sb.append("\n  - …").append(removed.size - 2).append(" more")
         return sb.toString().take(700)
+    }
+
+    // -- [T-android-diff-async-settle-2026-10] --
+
+    /**
+     * Bounded settle before diffing: a minimum beat for framework async work
+     * plus a drain wait on the page's in-flight fetch/XHR counter (pages
+     * without instrumentation just get the minimum beat).
+     */
+    private suspend fun awaitPageSettleForDiff() {
+        val started = System.currentTimeMillis()
+        val hardDeadline = started + 3_200L
+        while (System.currentTimeMillis() < hardDeadline) {
+            val elapsed = System.currentTimeMillis() - started
+            val raw = runCatching { evaluateJavascript(BrowserUseJS.netIdleProbe()) }.getOrNull()
+            val j = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val pending = j?.optInt("pending", -1) ?: -1
+            val lastAgo = j?.optInt("lastAgo", -1) ?: -1
+            val idleNow = pending <= 0 && (lastAgo < 0 || lastAgo >= 400)
+            if (idleNow && elapsed >= 700L) break
+            kotlinx.coroutines.delay(150)
+        }
+        kotlinx.coroutines.delay(120)
+    }
+
+    // -- [T-android-viewport-guard-2026-10] Malformed viewport meta recovery --
+
+    /**
+     * Pages with an invalid `initial-scale=0` (e.g. GitCode) get clamped to the
+     * 25% minimum page scale with a 4×-stretched layout. The injected guard has
+     * already rewritten the meta; this post-load check rescues the CURRENT view
+     * (zoomBy — the same fallback the pinch gesture uses) and, when the guard
+     * actually corrected the declaration, gives the layout one clean reload.
+     */
+    private val viewportRecoveredUrls = mutableSetOf<String>()
+
+    private val postLoadScope by lazy {
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    }
+
+    private suspend fun recoverBrokenViewportIfNeeded() {
+        val url = _currentURL.value
+        if (url.isEmpty()) return
+        val raw = runCatching {
+            evaluateJavascript(
+                "(function(){try{var vv=window.visualViewport;" +
+                    "return JSON.stringify({s:(vv?vv.scale:1),f:!!window.__minis_vp_fixed," +
+                    "iw:window.innerWidth,cw:(document.documentElement?document.documentElement.clientWidth:0)});" +
+                    "}catch(e){return '{}';}})()",
+            )
+        }.getOrNull() ?: return
+        val j = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        val scale = j.optDouble("s", 1.0)
+        if (scale.isNaN() || scale >= 0.5) return
+        withContext(Dispatchers.Main) {
+            runCatching { webView.zoomBy((1.0 / scale).toFloat()) }
+        }
+        Log.w(TAG, "Recovered broken viewport scale on $url (was $scale)")
+        if (j.optBoolean("f", false)) {
+            if (viewportRecoveredUrls.size > 200) viewportRecoveredUrls.clear()
+            if (viewportRecoveredUrls.add(url.take(300))) {
+                withContext(Dispatchers.Main) {
+                    runCatching { webView.reload() }
+                }
+            }
+        }
     }
 
     // -- Navigate --
@@ -2140,6 +2229,28 @@ class BrowserUseManager(
         val cmd = StringBuilder("curl")
         if (!method.equals("GET", ignoreCase = true)) cmd.append(" -X ").append(method)
         cmd.append(' ').append(shQuote(url))
+        // [T-android-net-capacity-v2-fu-2026-10] Real-browser fingerprint
+        // headers: WAFs (Huawei devdata etc.) reject bare curl, and the captured
+        // fetch headers never include the browser's forbidden headers — add
+        // them here, skipping any the capture already carries.
+        val capturedNames = mutableSetOf<String>()
+        if (qh != null) {
+            val ck = qh.keys()
+            while (ck.hasNext()) capturedNames.add(ck.next().lowercase())
+        }
+        val uaForCurl = withContext(Dispatchers.Main) {
+            runCatching { webView.settings.userAgentString }.getOrNull()
+        }
+        if (!uaForCurl.isNullOrEmpty() && "user-agent" !in capturedNames) {
+            cmd.append(" -H ").append(shQuote("User-Agent: $uaForCurl"))
+        }
+        if ("accept" !in capturedNames) cmd.append(" -H ").append(shQuote("Accept: */*"))
+        if ("accept-language" !in capturedNames) {
+            cmd.append(" -H ").append(shQuote("Accept-Language: zh-CN,zh;q=0.9,en;q=0.8"))
+        }
+        if ("sec-fetch-site" !in capturedNames) cmd.append(" -H ").append(shQuote("sec-fetch-site: same-origin"))
+        if ("sec-fetch-mode" !in capturedNames) cmd.append(" -H ").append(shQuote("sec-fetch-mode: cors"))
+        if ("sec-fetch-dest" !in capturedNames) cmd.append(" -H ").append(shQuote("sec-fetch-dest: empty"))
         if (qh != null) {
             val keys = qh.keys()
             while (keys.hasNext()) {
@@ -2160,7 +2271,8 @@ class BrowserUseManager(
                 appendLine()
                 append(
                     "Cookies come from the live browser jar for this URL" +
-                        (if (qb != null) "; body from the captured request (${qb.length} chars)" else "") + ".",
+                        (if (qb != null) "; body from the captured request (${qb.length} chars)" else "") +
+                        ". Browser fingerprint headers (UA/Accept/sec-fetch-*) were added so WAFs don't reject a bare curl.",
                 )
             },
         )
@@ -2269,7 +2381,34 @@ class BrowserUseManager(
             x != null && y != null -> BrowserUseJS.clickCoordinate(x, y)
             else -> return BrowserActionResult.error("click requires 'selector' or 'coordinate_x'/'coordinate_y'")
         }
-        val result = evaluateAndReturn(js)
+        // Raw evaluation (not evaluateAndReturn) so a target=_blank pre-empt can
+        // be detected before formatting — see below.
+        val raw = try {
+            evaluateJavascript(js)
+        } catch (e: Exception) {
+            return BrowserActionResult.error("JavaScript error: ${e.message}")
+        }
+        val json = runCatching { JSONObject(raw) }.getOrNull()
+        // [T-android-blank-link-2026-10] The popup blocker swallows new windows
+        // from scripted clicks; the JS handed back the href instead of clicking.
+        if (json != null && json.optBoolean("needsNewTab")) {
+            val url = json.optString("url")
+            if (url.isNotEmpty()) {
+                onNewTabRequest?.invoke(url)
+                val label = json.optString("text").take(60)
+                return BrowserActionResult(
+                    text = "Clicked a target=_blank link" + (if (label.isNotBlank()) " (\"$label\")" else "") +
+                        " — the popup blocker swallows new windows from scripted clicks, so it was opened " +
+                        "as a background browser tab instead: $url (find its tab_id via list_tabs).",
+                )
+            }
+        }
+        val result = if (json != null) {
+            if (json.has("error")) BrowserActionResult.error(json.getString("error"))
+            else BrowserActionResult(text = formatJSONResult(json))
+        } else {
+            BrowserActionResult(text = raw)
+        }
         // [T-android-browser-click-nav-2026-10] A click that starts a
         // navigation returns while the load is still in flight. Wait
         // (bounded) so the URL-change suffix below reports the settled URL

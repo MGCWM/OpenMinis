@@ -368,6 +368,82 @@ object BrowserUseJS {
         })();
     """.trimIndent()
 
+    /**
+     * [T-android-viewport-guard-2026-10] Corrects malformed viewport metas at
+     * parse time. GitCode ships `initial-scale=0` (illegal) and WebView clamps
+     * the page to its 25% minimum scale with a 4×-stretched layout. Rewrites
+     * initial-scale<=0 to 1 and drops zero maximum/minimum-scale clauses, via
+     * an early scan plus a MutationObserver for parser-inserted metas. Sets
+     * `window.__minis_vp_fixed` so the manager can decide whether a recovery
+     * reload is worth it.
+     */
+    val VIEWPORT_GUARD_JS: String = """
+        (function(){
+          if (window.__minis_vp_guard) return;
+          window.__minis_vp_guard = true;
+          function fix(meta) {
+            try {
+              var c = String(meta.getAttribute('content') || '');
+              if (!c) return;
+              var parts = c.split(',');
+              var out = [];
+              var changed = false;
+              for (var i = 0; i < parts.length; i++) {
+                var p = parts[i].trim();
+                if (!p) continue;
+                var eq = p.indexOf('=');
+                if (eq < 0) { out.push(p); continue; }
+                var k = p.slice(0, eq).trim().toLowerCase();
+                var v = p.slice(eq + 1).trim();
+                var f = parseFloat(v);
+                if ((k === 'initial-scale' || k === 'maximum-scale' || k === 'minimum-scale') && isFinite(f) && f <= 0) {
+                  changed = true;
+                  if (k === 'initial-scale') out.push('initial-scale=1');
+                  continue;
+                }
+                out.push(p);
+              }
+              if (changed) {
+                meta.setAttribute('content', out.join(', '));
+                window.__minis_vp_fixed = true;
+                try { console.warn('MINIS-VIEWPORT-FIX', c); } catch (_) {}
+              }
+            } catch (_) {}
+          }
+          function scan(root) {
+            try {
+              var list = (root && root.querySelectorAll) ? root.querySelectorAll('meta') : [];
+              for (var i = 0; i < list.length; i++) {
+                var n = list[i];
+                if (String(n.getAttribute('name') || '').toLowerCase() === 'viewport') fix(n);
+              }
+            } catch (_) {}
+          }
+          function watch() {
+            scan(document);
+            try {
+              var mo = new MutationObserver(function (muts) {
+                for (var i = 0; i < muts.length; i++) {
+                  var added = muts[i].addedNodes;
+                  for (var j = 0; j < added.length; j++) {
+                    var n = added[j];
+                    if (!n || n.nodeType !== 1) continue;
+                    if (n.tagName === 'META' && String(n.getAttribute('name') || '').toLowerCase() === 'viewport') fix(n);
+                    else scan(n);
+                  }
+                }
+              });
+              mo.observe(document.documentElement || document, { childList: true, subtree: true });
+            } catch (_) {}
+          }
+          function boot() {
+            if (document.documentElement) watch();
+            else setTimeout(boot, 0);
+          }
+          boot();
+        })();
+    """.trimIndent()
+
     /** Scroll the element into view and return its viewport rect (CSS px). */
     fun elementRect(selector: String): String = """
         (function(){
@@ -442,6 +518,21 @@ object BrowserUseJS {
             var el = __f('${jsQuote(selector)}');
             if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)} - searched CSS / text= / aria-label= / role= (incl. Shadow DOM + same-origin iframes)'});
             if (el.disabled) return JSON.stringify({error: 'Element is disabled', tag: el.tagName});
+            // [T-android-blank-link-2026-10] A target=_blank link from a
+            // scripted click would be silently swallowed by the popup blocker
+            // (no tab, no notice — observed on GitCode). Hand the href back so
+            // the manager can open a real tab instead of clicking blindly.
+            var blankAnchor = null;
+            try {
+                var a = (el.tagName === 'A') ? el : (el.closest ? el.closest('a') : null);
+                if (a && a.getAttribute && String(a.getAttribute('target') || '').toLowerCase() === '_blank' &&
+                    a.href && String(a.href).indexOf('javascript:') !== 0) {
+                    blankAnchor = a;
+                }
+            } catch (e) {}
+            if (blankAnchor) {
+                return JSON.stringify({needsNewTab: true, url: String(blankAnchor.href), text: (blankAnchor.innerText || '').substring(0, 100)});
+            }
             var info = {tag: el.tagName, text: (el.innerText || el.value || '').substring(0, 100)};
             try { el.scrollIntoView({block: 'center'}); } catch (e) {}
             var bOpts = {bubbles: true, cancelable: true, view: window};
@@ -485,6 +576,42 @@ object BrowserUseJS {
             var el = __f('${jsQuote(selector)}');
             if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
             el.focus();
+            if (el.isContentEditable) {
+                // [T-android-rich-editor-type-2026-10] Rich editors (CodeMirror 6,
+                // TinyMCE body, Slate/Lexical…) only sync their framework model
+                // from the REAL beforeinput/input pipeline that
+                // execCommand('insertText') produces; assigning innerText leaves
+                // the model empty (counter 0/65535, submit button stays disabled).
+                var via = 'fallback';
+                var ok = false;
+                try {
+                    var sel = window.getSelection();
+                    var range = document.createRange();
+                    range.selectNodeContents(el);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    var lines = '${jsQuote(text)}'.split('\n');
+                    for (var li = 0; li < lines.length; li++) {
+                        if (li > 0) { try { document.execCommand('insertLineBreak'); } catch (e) {} }
+                        if (lines[li].length > 0) {
+                            ok = document.execCommand('insertText', false, lines[li]) || ok;
+                        }
+                    }
+                    if (ok) via = 'execCommand-insertText';
+                } catch (e) {}
+                if (!ok) {
+                    try {
+                        el.textContent = '${jsQuote(text)}';
+                        el.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: '${jsQuote(text)}'}));
+                    } catch (e) {}
+                }
+                try { el.dispatchEvent(new Event('change', {bubbles: true})); } catch (e) {}
+                try {
+                    el.dispatchEvent(new FocusEvent('blur', {bubbles: true, relatedTarget: null}));
+                    el.dispatchEvent(new FocusEvent('focusout', {bubbles: true, relatedTarget: null}));
+                } catch (e) {}
+                return JSON.stringify({typed: true, selector: '${jsQuote(selector)}', length: '${jsQuote(text)}'.length, via: via});
+            }
             if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
                 var nativeSetter = Object.getOwnPropertyDescriptor(
                     el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value'
