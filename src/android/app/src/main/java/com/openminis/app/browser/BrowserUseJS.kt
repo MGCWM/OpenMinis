@@ -381,8 +381,10 @@ object BrowserUseJS {
         (function(){
           if (window.__minis_vp_guard) return;
           window.__minis_vp_guard = true;
+          window.__minis_vp_fixes = 0;
           function fix(meta) {
             try {
+              if (window.__minis_vp_fixes > 200) return;
               var c = String(meta.getAttribute('content') || '');
               if (!c) return;
               var parts = c.split(',');
@@ -404,6 +406,7 @@ object BrowserUseJS {
                 out.push(p);
               }
               if (changed) {
+                window.__minis_vp_fixes++;
                 meta.setAttribute('content', out.join(', '));
                 window.__minis_vp_fixed = true;
                 try { console.warn('MINIS-VIEWPORT-FIX', c); } catch (_) {}
@@ -419,12 +422,22 @@ object BrowserUseJS {
               }
             } catch (_) {}
           }
+          window.__minis_vp_fix_all = function () { scan(document); };
           function watch() {
             scan(document);
             try {
               var mo = new MutationObserver(function (muts) {
                 for (var i = 0; i < muts.length; i++) {
-                  var added = muts[i].addedNodes;
+                  var m = muts[i];
+                  // In-place content mutation on the meta itself (GitCode's
+                  // post-hydration rewrite) arrives as an `attributes` record,
+                  // NOT childList — handle both.
+                  if (m.target && m.target.nodeType === 1 &&
+                      m.target.tagName === 'META' &&
+                      String(m.target.getAttribute('name') || '').toLowerCase() === 'viewport') {
+                    fix(m.target);
+                  }
+                  var added = m.addedNodes;
                   for (var j = 0; j < added.length; j++) {
                     var n = added[j];
                     if (!n || n.nodeType !== 1) continue;
@@ -433,7 +446,9 @@ object BrowserUseJS {
                   }
                 }
               });
-              mo.observe(document.documentElement || document, { childList: true, subtree: true });
+              mo.observe(document.documentElement || document, {
+                childList: true, subtree: true, attributes: true, attributeFilter: ['content']
+              });
             } catch (_) {}
           }
           function boot() {
@@ -441,6 +456,16 @@ object BrowserUseJS {
             else setTimeout(boot, 0);
           }
           boot();
+          // Belt-and-braces: the poisoning script can run at any hydration
+          // moment — poll fast for the first 5s, then slowly for another 15s.
+          try {
+            var fast = setInterval(function () { scan(document); }, 60);
+            setTimeout(function () {
+              clearInterval(fast);
+              var slow = setInterval(function () { scan(document); }, 500);
+              setTimeout(function () { clearInterval(slow); }, 15000);
+            }, 5000);
+          } catch (_) {}
         })();
     """.trimIndent()
 

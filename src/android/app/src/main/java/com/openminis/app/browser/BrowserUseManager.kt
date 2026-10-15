@@ -723,6 +723,14 @@ class BrowserUseManager(
                         runCatching { recoverBrokenViewportIfNeeded() }
                     }
                 }, 450)
+                // A second, later check: sites can rewrite the viewport meta a
+                // second or two after load (GitCode's hydration does exactly
+                // that) — by then the first check is long past.
+                view.postDelayed({
+                    postLoadScope.launch {
+                        runCatching { recoverBrokenViewportIfNeeded() }
+                    }
+                }, 2_600)
                 _canGoBack.value = view.canGoBack()
                 _canGoForward.value = view.canGoForward()
                 navigationDeferred?.complete(Unit)
@@ -1266,9 +1274,7 @@ class BrowserUseManager(
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     }
 
-    private suspend fun recoverBrokenViewportIfNeeded() {
-        val url = _currentURL.value
-        if (url.isEmpty()) return
+    private suspend fun readViewportState(): Triple<Double, Boolean, Int>? {
         val raw = runCatching {
             evaluateJavascript(
                 "(function(){try{var vv=window.visualViewport;" +
@@ -1276,15 +1282,40 @@ class BrowserUseManager(
                     "iw:window.innerWidth,cw:(document.documentElement?document.documentElement.clientWidth:0)});" +
                     "}catch(e){return '{}';}})()",
             )
-        }.getOrNull() ?: return
-        val j = runCatching { JSONObject(raw) }.getOrNull() ?: return
-        val scale = j.optDouble("s", 1.0)
+        }.getOrNull() ?: return null
+        val j = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        return Triple(j.optDouble("s", 1.0), j.optBoolean("f", false), j.optInt("iw", 0))
+    }
+
+    private suspend fun recoverBrokenViewportIfNeeded() {
+        val url = _currentURL.value
+        if (url.isEmpty()) return
+        val st = readViewportState() ?: return
+        val scale = st.first
         if (scale.isNaN() || scale >= 0.5) return
+        // [T-android-viewport-guard-2026-10] First ask the page-side guard to
+        // re-fix every viewport meta. Proven on GitCode: Chromium re-evaluates
+        // the viewport the moment a malformed declaration is corrected — scale
+        // AND the 4x-stretched layout snap back with no reload.
+        runCatching {
+            evaluateJavascript(
+                "(function(){try{if(window.__minis_vp_fix_all){window.__minis_vp_fix_all();return 'ok';}return 'no';}catch(e){return 'err';}})()",
+            )
+        }
+        kotlinx.coroutines.delay(450)
+        val st2 = readViewportState()
+        if (st2 != null && !st2.first.isNaN() && st2.first >= 0.5) {
+            Log.w(TAG, "Recovered broken viewport via meta fix on $url (was $scale)")
+            return
+        }
+        // Fallback (guard unavailable / fix ineffective): pinch-style zoom
+        // rescue, then one guarded reload when the meta was actually corrected.
         withContext(Dispatchers.Main) {
             runCatching { webView.zoomBy((1.0 / scale).toFloat()) }
         }
-        Log.w(TAG, "Recovered broken viewport scale on $url (was $scale)")
-        if (j.optBoolean("f", false)) {
+        Log.w(TAG, "Viewport zoom rescue on $url (was $scale)")
+        val fixedNow = st2?.second ?: st.second
+        if (fixedNow) {
             if (viewportRecoveredUrls.size > 200) viewportRecoveredUrls.clear()
             if (viewportRecoveredUrls.add(url.take(300))) {
                 withContext(Dispatchers.Main) {
