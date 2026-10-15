@@ -1085,7 +1085,8 @@ class BrowserUseManager(
             BrowserAction.WAIT_FOR_NETWORK_IDLE -> return waitForNetworkIdle(input.timeoutMs, input.amount)
             BrowserAction.EXTRACT_QR -> return extractQr()
             BrowserAction.GET_RESPONSE_LOG -> return getResponseLogAction(input)
-            BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS ->
+            BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS,
+            BrowserAction.RESTORE_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
         }
 
