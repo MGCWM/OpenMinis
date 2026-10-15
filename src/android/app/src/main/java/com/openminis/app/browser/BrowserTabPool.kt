@@ -178,6 +178,27 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         set(value) { _userAgentProfile.value = value }
     private var customUserAgentString: String? = null
 
+    // ── Per-origin overrides  [T-android-browser-origin-overrides-2026-10] ──
+    //
+    // UA / viewport remembered per origin (scheme://host[:port]) so a site that
+    // needs Desktop UA at 1920×1080 reopens that way after a restart, without
+    // forcing every other site into it. Persisted in browser_prefs — a
+    // device-level preference, like the global UA; not per chat.
+    private class OriginOverride {
+        var uaProfile: UserAgentProfile? = null
+        var uaCustom: String? = null
+        var vw: Int = 0
+        var vh: Int = 0
+    }
+
+    private val originOverrides = mutableMapOf<String, OriginOverride>()
+
+    /** What a tab is currently running with, so the applier can no-op. */
+    private class AppliedConfig(val origin: String?, val ua: String?, val vw: Int, val vh: Int)
+    private val appliedConfigs = mutableMapOf<Int, AppliedConfig>()
+
+    private var lastTabStateSaveMs = 0L
+
     private var sessionId: String? = null
     private val savedURLs = mutableMapOf<Int, String>()
 
@@ -327,6 +348,28 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             }
         }
         customUserAgentString = prefs.getString("custom_user_agent", null)?.ifEmpty { null }
+
+        // [T-android-browser-origin-overrides-2026-10] Restore per-origin UA /
+        // viewport overrides (JSON map in browser_prefs).
+        runCatching {
+            val raw = prefs.getString("origin_overrides", null)
+            if (!raw.isNullOrBlank()) {
+                val obj = JSONObject(raw)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    val o = obj.optJSONObject(k) ?: continue
+                    val ov = OriginOverride()
+                    o.optString("ua").takeIf { it.isNotBlank() }?.let { n ->
+                        runCatching { UserAgentProfile.valueOf(n) }.getOrNull()?.let { ov.uaProfile = it }
+                    }
+                    ov.uaCustom = o.optString("uaCustom").takeIf { it.isNotBlank() }
+                    ov.vw = o.optInt("vw", 0)
+                    ov.vh = o.optInt("vh", 0)
+                    originOverrides[k] = ov
+                }
+            }
+        }
 
         // Restore global custom viewport (0 = unset → fall back to UA profile).
         // Mirrors iOS `BrowserCustomViewport{Width,Height}` UserDefaults keys.
@@ -701,6 +744,8 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             // Already scoped to the caller's own tabs by listTabs(owner).
             BrowserAction.LIST_TABS -> listTabs(owner)
             BrowserAction.SET_VIEWPORT -> handleSetViewport(input)
+            BrowserAction.SET_USER_AGENT -> handleSetUserAgent(input)
+            BrowserAction.RESTORE_TABS -> restoreTabs(owner)
             else -> {
                 ownershipViolation(input.tabId)?.let { return it }
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit
@@ -1205,6 +1250,10 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         manager.onNewWindow = { resultMsg -> handleNewWindow(resultMsg) }
         manager.onCloseWindow = { handleCloseWindow(manager) }
         wireDownloadHandlers(manager)
+        // [T-android-browser-origin-overrides-2026-10] Navigation hook + seed
+        // for the per-origin override applier.
+        manager.onPageChanged = { url -> handleTabPageChanged(id, url) }
+        appliedConfigs[id] = AppliedConfig(null, initialUserAgent(), vpW, vpH)
 
         val tab = Tab(id = id, manager = manager)
         tabs.add(tab)
@@ -1322,6 +1371,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // tab, or a later tab reusing this id would inherit a stale owner.
         tabOwner.remove(id)
         lastTabByOwner.entries.removeAll { it.value == id }
+        // [T-android-browser-origin-overrides-2026-10] Closing is deliberate —
+        // don't let restore_tabs resurrect it.
+        savedURLs.remove(id)
 
         // Select next tab
         if (currentTabs.isNotEmpty() && _selectedTabId.value == id) {
@@ -1377,6 +1429,8 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         manager.onNewWindow = { msg -> handleNewWindow(msg) }
         manager.onCloseWindow = { handleCloseWindow(manager) }
         wireDownloadHandlers(manager)
+        manager.onPageChanged = { url -> handleTabPageChanged(id, url) }
+        appliedConfigs[id] = AppliedConfig(null, initialUserAgent(), vpW, vpH)
 
         val tab = Tab(id = id, manager = manager)
         currentTabs.add(tab)
@@ -1408,7 +1462,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             // so teardown happens once the callback has unwound. The other
             // close paths (closeTab / closeTabFromUI) are not re-entrant this
             // way and release inline.
+            savedURLs.remove(closedId)
             closing.manager.webView.post { releaseTabResources(closing) }
+            saveState()
             Log.i(TAG, "window.close → removed tab $closedId")
         }
     }
@@ -1450,6 +1506,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         if (_selectedTabId.value == tabId && currentTabs.isNotEmpty()) {
             _selectedTabId.value = currentTabs.first().id
         }
+        savedURLs.remove(tabId)
         saveState()
     }
 
@@ -1663,6 +1720,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         tab.inUseGraceJob?.cancel()
         tab.inUseGraceJob = null
         tabLocks.remove(tab.id)
+        appliedConfigs.remove(tab.id)
         try {
             val webView = tab.manager.webView
             webView.stopLoading()
@@ -1833,8 +1891,16 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     private suspend fun handleSetViewport(input: BrowserActionInput): BrowserActionResult = withContext(Dispatchers.Main) {
         if (input.reset) {
             resetSessionViewport()
+            // [T-android-browser-origin-overrides-2026-10] Also drop the
+            // per-origin override for the active tab's origin, so navigating
+            // back doesn't silently resurrect it.
+            val cleared = currentOriginForOverride()?.let { origin -> originOverrides.remove(origin) != null } == true
+            if (cleared) saveOriginOverrides()
             val (w, h) = resolvedViewportSize()
-            return@withContext BrowserActionResult(text = "Viewport reset to default (${w}x$h)")
+            return@withContext BrowserActionResult(
+                text = "Viewport reset to default (${w}x$h)" +
+                    (if (cleared) " — per-origin override cleared for this site" else ""),
+            )
         }
         val w = input.viewportWidth
         val h = input.viewportHeight
@@ -1844,7 +1910,196 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             )
         }
         setSessionViewport(w, h)
-        BrowserActionResult(text = "Viewport set to ${w}x$h (session override)")
+        // Remember for the current origin too (survives restarts; scoped to
+        // the site instead of the whole session).
+        val origin = currentOriginForOverride()
+        if (origin != null) {
+            val ov = originOverrides.getOrPut(origin) { OriginOverride() }
+            ov.vw = w
+            ov.vh = h
+            saveOriginOverrides()
+        }
+        BrowserActionResult(
+            text = "Viewport set to ${w}x$h (session override" +
+                (if (origin != null) "; remembered for $origin — re-applies on revisit, survives restarts" else "") + ")",
+        )
+    }
+
+    // -- Per-origin overrides + tab restore  [T-android-browser-origin-overrides-2026-10] --
+
+    private fun initialUserAgent(): String? =
+        if (userAgentProfile == UserAgentProfile.CUSTOM && !customUserAgentString.isNullOrEmpty()) {
+            customUserAgentString
+        } else {
+            userAgentProfile.userAgentString
+        }
+
+    private fun saveOriginOverrides() {
+        try {
+            val obj = JSONObject()
+            for ((origin, ov) in originOverrides) {
+                val o = JSONObject()
+                ov.uaProfile?.let { o.put("ua", it.name) }
+                ov.uaCustom?.let { o.put("uaCustom", it) }
+                if (ov.vw > 0 && ov.vh > 0) {
+                    o.put("vw", ov.vw)
+                    o.put("vh", ov.vh)
+                }
+                obj.put(origin, o)
+            }
+            context.getSharedPreferences("browser_prefs", Context.MODE_PRIVATE)
+                .edit().putString("origin_overrides", obj.toString()).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save origin overrides: ${e.message}")
+        }
+    }
+
+    /** https://host[:port] for web URLs; null for about: / data: / blank. */
+    private fun originOf(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return try {
+            val u = android.net.Uri.parse(url)
+            val scheme = u.scheme?.lowercase() ?: return null
+            if (scheme != "http" && scheme != "https") return null
+            val host = u.host?.lowercase() ?: return null
+            val port = if (u.port > 0) ":" + u.port else ""
+            scheme + "://" + host + port
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun activeTab(): Tab? =
+        _tabs.value.firstOrNull { it.id == _selectedTabId.value } ?: _tabs.value.firstOrNull()
+
+    private fun currentOriginForOverride(): String? =
+        originOf(activeTab()?.manager?.currentURL?.value)
+
+    /**
+     * After a navigation commits: keep the saved-tab URL fresh and apply any
+     * per-origin UA / viewport override for the landing origin.
+     */
+    private fun handleTabPageChanged(tabId: Int, url: String?) {
+        val tab = _tabs.value.firstOrNull { it.id == tabId } ?: return
+        val u = url ?: tab.manager.currentURL.value
+        if (u.isNotEmpty() && !u.startsWith("about:")) {
+            savedURLs[tabId] = u
+            val now = System.currentTimeMillis()
+            if (now - lastTabStateSaveMs > 1_500L) {
+                lastTabStateSaveMs = now
+                saveState()
+            }
+        }
+        runCatching { applyOriginOverrides(tab, u) }
+    }
+
+    /**
+     * Apply the UA + viewport that [url]'s origin wants (or restore defaults
+     * after leaving an override origin). At most one reload per origin stay —
+     * [appliedConfigs] records what the tab is running with, so the reload's
+     * own onPageStarted is a no-op instead of a loop.
+     */
+    private fun applyOriginOverrides(tab: Tab, url: String) {
+        val origin = originOf(url)
+        val ov = origin?.let { originOverrides[it] }
+        val targetProfile = ov?.uaProfile ?: userAgentProfile
+        val targetCustom = if (ov?.uaProfile != null) ov.uaCustom else customUserAgentString
+        val resolvedUa = if (targetProfile == UserAgentProfile.CUSTOM && !targetCustom.isNullOrEmpty()) {
+            targetCustom
+        } else {
+            targetProfile.userAgentString
+        }
+        val (baseW, baseH) = resolvedViewportSize()
+        val wantW = if (ov != null && ov.vw > 0 && ov.vh > 0) ov.vw else baseW
+        val wantH = if (ov != null && ov.vw > 0 && ov.vh > 0) ov.vh else baseH
+
+        val applied = appliedConfigs[tab.id]
+        if (applied != null && applied.origin == origin &&
+            applied.ua == resolvedUa && applied.vw == wantW && applied.vh == wantH
+        ) {
+            return
+        }
+        val currentUa = try { tab.manager.webView.settings.userAgentString } catch (_: Exception) { null }
+        val uaNeeds = resolvedUa != null && currentUa != resolvedUa
+        val vpNeeds = applied == null || applied.vw != wantW || applied.vh != wantH
+        appliedConfigs[tab.id] = AppliedConfig(origin, resolvedUa, wantW, wantH)
+        if (!uaNeeds && !vpNeeds) return
+        try {
+            if (uaNeeds) tab.manager.applyUserAgentQuiet(targetProfile, targetCustom)
+            tab.manager.applyViewport(wantW, wantH)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Origin override apply failed for ${origin ?: url}: ${t.message}")
+            return
+        }
+        // One bounded reload so the landing page renders with the override
+        // (UA + CSS viewport are read at load time).
+        tab.manager.webView.post { runCatching { tab.manager.webView.reload() } }
+    }
+
+    /** [T-android-browser-origin-overrides-2026-10] Agent set_user_agent: per-tab + per-origin. */
+    private suspend fun handleSetUserAgent(input: BrowserActionInput): BrowserActionResult = withContext(Dispatchers.Main) {
+        val profile = input.userAgent ?: UserAgentProfile.MOBILE_CHROME
+        val tab = (input.tabId?.let { id -> _tabs.value.firstOrNull { it.id == id } }) ?: activeTab()
+            ?: return@withContext BrowserActionResult.error("set_user_agent: no tab open")
+        val custom = if (profile == UserAgentProfile.CUSTOM) customUserAgentString else null
+        tab.manager.applyUserAgentQuiet(profile, custom)
+        val hasPage = tab.manager.currentURL.value.isNotEmpty()
+        val origin = originOf(tab.manager.currentURL.value)
+        val ov = origin?.let { originOverrides[it] }
+        val (w, h) = if (ov != null && ov.vw > 0 && ov.vh > 0) ov.vw to ov.vh else resolvedViewportSize()
+        tab.manager.applyViewport(w, h)
+        appliedConfigs[tab.id] = AppliedConfig(
+            origin,
+            if (profile == UserAgentProfile.CUSTOM) custom else profile.userAgentString,
+            w,
+            h,
+        )
+        if (hasPage) {
+            tab.manager.webView.post { runCatching { tab.manager.webView.reload() } }
+        }
+        var suffix = ""
+        if (origin != null && hasPage) {
+            val o = originOverrides.getOrPut(origin) { OriginOverride() }
+            o.uaProfile = profile
+            o.uaCustom = custom
+            saveOriginOverrides()
+            suffix = " — remembered for $origin (re-applies on revisit, survives restarts)"
+        }
+        val vp = profile.viewportSize
+        BrowserActionResult(text = "Switched to ${profile.value} (${vp.first}x${vp.second})$suffix")
+    }
+
+    /** [T-android-browser-origin-overrides-2026-10] Reopen the last saved tab set. */
+    private suspend fun restoreTabs(owner: String?): BrowserActionResult = withContext(Dispatchers.Main) {
+        if (savedURLs.isEmpty()) {
+            return@withContext BrowserActionResult(text = "No saved tabs for this chat yet — navigate somewhere first.")
+        }
+        val openUrls = _tabs.value.map { it.manager.currentURL.value }
+        val created = mutableListOf<String>()
+        val skipped = mutableListOf<String>()
+        for ((_, url) in savedURLs.entries.sortedBy { it.key }) {
+            if (url.isBlank() || url.startsWith("about:")) continue
+            if (openUrls.contains(url) || created.contains(url)) {
+                skipped += url
+                continue
+            }
+            val tabs = _tabs.value.toMutableList()
+            val tab = createTab(tabs, url, owner)
+            if (tab == null) {
+                skipped += "$url (no tab capacity)"
+                break
+            }
+            created += url
+        }
+        saveState()
+        val sb = StringBuilder()
+        sb.appendLine("Restored ${created.size} tab(s) from the last saved set:")
+        for (u in created) sb.appendLine("  + $u")
+        if (skipped.isNotEmpty()) {
+            sb.appendLine("Skipped ${skipped.size}:")
+            for (u in skipped) sb.appendLine("  - $u")
+        }
+        BrowserActionResult(text = sb.toString().trimEnd())
     }
 
     // -- Disk Persistence --

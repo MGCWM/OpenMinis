@@ -20,37 +20,103 @@ object BrowserUseJS {
           if (window.__minis_net__) return;
           var ring = []; window.__minis_net__ = ring;
           var state = {pending: 0, last: Date.now()}; window.__minis_net_state = state;
+          var seq = 0;
           function touch() { state.last = Date.now(); }
-          function push(e) { ring.push(e); if (ring.length > 200) ring.shift(); }
+          var FULL_MAX = 131072, FULL_TOTAL = 8388608, FULL_KEEP = 60;
+          var full = {}; var fullOrder = []; var fullBytes = 0;
+          window.__minis_net_full = full;
+          function storeFull(id, text) {
+            try {
+              if (text == null) return false;
+              text = String(text);
+              if (text.length === 0 || text.length > FULL_MAX) return false;
+              if (full[id] != null) return true;
+              full[id] = text; fullOrder.push(id); fullBytes += text.length;
+              while ((fullOrder.length > FULL_KEEP || fullBytes > FULL_TOTAL) && fullOrder.length > 0) {
+                var old = fullOrder.shift();
+                if (full[old] != null) { fullBytes -= full[old].length; delete full[old]; }
+              }
+              return true;
+            } catch (_) { return false; }
+          }
           function preview(s) {
             try {
               if (s == null) return '';
               s = String(s);
-              return s.length > 2000 ? s.slice(0, 2000) + '...' : s;
+              return s.length > 2000 ? s.slice(0, 2000) + '...[' + s.length + ' chars]' : s;
             } catch (_) { return ''; }
           }
+          function capBody(s, n) {
+            try {
+              if (s == null) return null;
+              if (typeof s !== 'string') {
+                if (typeof URLSearchParams !== 'undefined' && s instanceof URLSearchParams) { s = s.toString(); }
+                else if (typeof FormData !== 'undefined' && s instanceof FormData) { return '[FormData]'; }
+                else if (typeof Blob !== 'undefined' && s instanceof Blob) { return '[Blob ' + s.size + ' bytes]'; }
+                else if (typeof ArrayBuffer !== 'undefined' && s instanceof ArrayBuffer) { return '[ArrayBuffer ' + s.byteLength + ' bytes]'; }
+                else { try { s = JSON.stringify(s); } catch (_) { return '[unserializable]'; } }
+              }
+              s = String(s);
+              return s.length > n ? s.slice(0, n) + '...[' + s.length + ' chars]' : s;
+            } catch (_) { return null; }
+          }
+          function headerObj(h) {
+            var out = null;
+            try {
+              if (!h) return null;
+              if (typeof Headers !== 'undefined' && h instanceof Headers) {
+                out = {}; h.forEach(function(v, k) { out[k] = String(v).slice(0, 400); });
+              } else if (Object.prototype.toString.call(h) === '[object Array]') {
+                out = {}; for (var i = 0; i < h.length; i++) { out[h[i][0]] = String(h[i][1]).slice(0, 400); }
+              } else if (typeof h === 'object') {
+                out = {}; for (var k in h) { try { out[k] = String(h[k]).slice(0, 400); } catch (_) {} }
+              }
+            } catch (_) {}
+            return out;
+          }
+          function rawHeaders(text) {
+            var out = null;
+            try {
+              if (!text) return null;
+              var lines = String(text).split('\n');
+              for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                var idx = line.indexOf(':');
+                if (idx > 0) { if (!out) out = {}; out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim().slice(0, 400); }
+              }
+            } catch (_) {}
+            return out;
+          }
+          function push(e) { ring.push(e); if (ring.length > 1000) ring.shift(); }
           try {
             var of = window.fetch;
             if (of) {
               window.fetch = function() {
-                var args = arguments; var url = ''; var method = 'GET';
+                var args = arguments; var url = ''; var method = 'GET'; var qh = null; var qb = null;
                 try {
                   url = (typeof args[0] === 'string') ? args[0] : (args[0] && args[0].url) || '';
-                  method = ((args[1] && args[1].method) || 'GET').toUpperCase();
+                  var init = args[1] || {};
+                  method = (init.method || (args[0] && args[0].method) || 'GET').toUpperCase();
+                  qh = headerObj(init.headers || (args[0] && args[0].headers));
+                  qb = capBody(init.body, 2000);
                 } catch (_) {}
                 state.pending++; touch();
                 var t0 = Date.now();
+                var id = ++seq;
                 return of.apply(this, args).then(function(resp) {
                   try {
                     var c = resp.clone();
                     c.text().then(function(b) {
-                      push({t:'fetch', m:method, u:String(url), s:resp.status, ms:Date.now()-t0, b:preview(b)});
-                    }).catch(function() {});
+                      var stored = storeFull(id, b);
+                      push({t:'fetch', id:id, m:method, u:String(url), s:resp.status, ms:Date.now()-t0, b:preview(b), bl:(b == null ? 0 : String(b).length), tb:stored, qh:qh, qb:qb, rh:headerObj(resp.headers)});
+                    }).catch(function() {
+                      push({t:'fetch', id:id, m:method, u:String(url), s:resp.status, ms:Date.now()-t0, b:'[body unreadable]', qh:qh, qb:qb, rh:headerObj(resp.headers)});
+                    });
                   } catch (_) {}
                   state.pending--; touch();
                   return resp;
                 }, function(err) {
-                  push({t:'fetch', m:method, u:String(url), s:0, ms:Date.now()-t0, b:'ERROR: ' + err});
+                  push({t:'fetch', id:id, m:method, u:String(url), s:0, ms:Date.now()-t0, b:'ERROR: ' + err, qh:qh, qb:qb});
                   state.pending--; touch();
                   throw err;
                 });
@@ -60,17 +126,32 @@ object BrowserUseJS {
           try {
             var oo = XMLHttpRequest.prototype.open;
             var os = XMLHttpRequest.prototype.send;
+            var osh = XMLHttpRequest.prototype.setRequestHeader;
+            XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+              try {
+                if (!this.__minis) this.__minis = { m: 'GET', u: '' };
+                if (!this.__minis.qh) this.__minis.qh = {};
+                this.__minis.qh[String(k)] = String(v).slice(0, 400);
+              } catch (_) {}
+              return osh.apply(this, arguments);
+            };
             XMLHttpRequest.prototype.open = function(m, u) {
-              this.__minis = { m: (m || 'GET').toUpperCase(), u: String(u) };
+              var prev = this.__minis || {};
+              this.__minis = { m: (m || 'GET').toUpperCase(), u: String(u), qh: prev.qh || null, qb: null };
               return oo.apply(this, arguments);
             };
-            XMLHttpRequest.prototype.send = function() {
+            XMLHttpRequest.prototype.send = function(b) {
               var x = this; var st = Date.now();
+              try { if (x.__minis) x.__minis.qb = capBody(b, 2000); } catch (_) {}
               state.pending++; touch();
+              var id = ++seq;
               x.addEventListener('loadend', function() {
                 state.pending--; touch();
                 try {
-                  push({t:'xhr', m:(x.__minis && x.__minis.m) || 'GET', u:(x.__minis && x.__minis.u) || '', s:x.status, ms:Date.now()-st, b:preview(x.responseText)});
+                  var body = null;
+                  try { body = x.responseText; } catch (_) {}
+                  var stored = storeFull(id, body);
+                  push({t:'xhr', id:id, m:(x.__minis && x.__minis.m) || 'GET', u:(x.__minis && x.__minis.u) || '', s:x.status, ms:Date.now()-st, b:preview(body), bl:(body == null ? 0 : String(body).length), tb:stored, qh:(x.__minis && x.__minis.qh) || null, qb:(x.__minis && x.__minis.qb) || null, rh:rawHeaders(x.getAllResponseHeaders())});
                 } catch (_) {}
               });
               return os.apply(this, arguments);
@@ -888,6 +969,85 @@ object BrowserUseJS {
             textLen: textLen,
             hasMedia: hasMedia
           });
+        })()
+    """.trimIndent()
+
+    /**
+     * [T-android-net-capacity-2026-10] Page-side network-log query with paging
+     * and optional full bodies. Newest-first paging: offset=0 starts at the
+     * most recent matching entry.
+     */
+    fun networkLogQuery(filter: String?, offset: Int, limit: Int, full: Boolean): String = """
+        (function(){
+          var ring = window.__minis_net__ || [];
+          var f = ${JSONObject.quote(filter?.trim()?.lowercase() ?: "")};
+          var items = [];
+          for (var i = 0; i < ring.length; i++) {
+            var e = ring[i];
+            if (f && String(e.u).toLowerCase().indexOf(f) < 0) continue;
+            items.push(e);
+          }
+          var total = items.length;
+          var off = ${offset.coerceAtLeast(0)};
+          var lim = ${limit.coerceIn(1, 100)};
+          var end = total - off; if (end < 0) end = 0;
+          var start = end - lim; if (start < 0) start = 0;
+          var fullMap = window.__minis_net_full || {};
+          var useFull = ${if (full) "true" else "false"};
+          var out = [];
+          for (var j = start; j < end; j++) {
+            var e2 = items[j];
+            var body = e2.b || '';
+            if (useFull && e2.id != null && fullMap[e2.id] != null) {
+              body = String(fullMap[e2.id]);
+              if (body.length > 20000) body = body.slice(0, 20000) + '...[' + body.length + ' chars total]';
+            }
+            out.push({id:e2.id, t:e2.t, tf:Date.now() - e2.t, m:e2.m, u:e2.u, s:e2.s, ms:e2.ms, b:body, bl:e2.bl || 0, tb:!!e2.tb, qh:e2.qh || null, qb:e2.qb || null, rh:e2.rh || null});
+          }
+          return JSON.stringify({total: total, offset: off, limit: lim, full: useFull, entries: out});
+        })()
+    """.trimIndent()
+
+    /**
+     * [T-android-request-replay-2026-10] Re-send a captured fetch/XHR request
+     * from the page context (carries the page's cookies; no CORS guessing).
+     * Async IIFE — call through BrowserUseManager.awaitPromiseJs.
+     */
+    fun replayRequest(index: Int?, filter: String?, method: String?, body: String?, headersJson: String?): String = """
+        (async function(){
+          var ring = window.__minis_net__ || [];
+          var f = ${JSONObject.quote(filter?.trim()?.lowercase() ?: "")};
+          var cands = [];
+          for (var i = 0; i < ring.length; i++) {
+            var e = ring[i];
+            if (f && String(e.u).toLowerCase().indexOf(f) < 0) continue;
+            cands.push(e);
+          }
+          if (!cands.length) return {error: 'no captured fetch/XHR request matches' + (f ? (' filter=' + f) : ' (ring: ' + ring.length + ' entries)')};
+          var idx = ${(index ?: 1).coerceAtLeast(1)};
+          var e2 = cands[cands.length - idx];
+          if (!e2) return {error: 'index ' + idx + ' is out of range (' + cands.length + ' matching requests)'};
+          var m = ${JSONObject.quote(method?.trim()?.uppercase() ?: "")} || e2.m || 'GET';
+          var hdrs = {};
+          if (e2.qh) { for (var k in e2.qh) { var lk = String(k).toLowerCase(); if (lk !== 'cookie' && lk !== 'host' && lk !== 'content-length') hdrs[k] = e2.qh[k]; } }
+          var extra = ${JSONObject.quote(headersJson?.trim() ?: "")};
+          if (extra) { try { var o = JSON.parse(extra); for (var k2 in o) { hdrs[k2] = String(o[k2]); } } catch (_) {} }
+          var overrideBody = ${JSONObject.quote(body ?: "")};
+          var payload = null;
+          if (overrideBody) payload = overrideBody;
+          else if (e2.qb != null) { var qbStr = String(e2.qb); if (qbStr.length > 0 && qbStr.charAt(0) !== '[') payload = qbStr; }
+          if (payload != null && (m === 'GET' || m === 'HEAD')) payload = null;
+          var opts = {method: m, headers: hdrs, credentials: 'include'};
+          if (payload != null) opts.body = payload;
+          var t0 = Date.now();
+          try {
+            var r = await fetch(e2.u, opts);
+            var txt = '';
+            try { txt = await r.text(); } catch (_) {}
+            return {replayed: true, id: e2.id, url: e2.u, method: m, status: r.status, ms: Date.now() - t0, size: txt.length, body: txt.length > 4000 ? txt.slice(0, 4000) : txt, truncated: txt.length > 4000};
+          } catch (err) {
+            return {replayed: false, url: e2.u, method: m, error: String((err && err.message) || err)};
+          }
         })()
     """.trimIndent()
 

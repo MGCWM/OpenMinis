@@ -52,7 +52,12 @@ enum class BrowserAction(val value: String) {
     WAIT_FOR_URL("wait_for_url"),
     WAIT_FOR_COOKIE("wait_for_cookie"),
     WAIT_FOR_NETWORK_IDLE("wait_for_network_idle"),
-    EXTRACT_QR("extract_qr");
+    EXTRACT_QR("extract_qr"),
+    // [T-android-net-capacity / request-replay / fill-form / restore-tabs 2026-10]
+    REPLAY_REQUEST("replay_request"),
+    COPY_AS_CURL("copy_as_curl"),
+    FILL_FORM("fill_form"),
+    RESTORE_TABS("restore_tabs");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action
@@ -69,7 +74,7 @@ enum class BrowserAction(val value: String) {
 
         /** Actions that visually change the page and warrant an auto-snapshot. */
         val visualChangeActions: Set<BrowserAction> = setOf(
-            NAVIGATE, CLICK, SCROLL, HOVER, TYPE, GESTURE, PRESS_KEY
+            NAVIGATE, CLICK, SCROLL, HOVER, TYPE, GESTURE, PRESS_KEY, FILL_FORM
         )
 
         /**

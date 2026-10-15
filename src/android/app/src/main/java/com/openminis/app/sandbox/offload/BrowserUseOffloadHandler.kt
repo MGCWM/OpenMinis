@@ -432,6 +432,10 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
             "wait_for_cookie"    -> "browser: wait for cookie"
             "wait_for_network_idle" -> "browser: wait for network idle"
             "extract_qr"         -> "browser: extract QR"
+            "replay_request"     -> "browser: replay request"
+            "copy_as_curl"       -> "browser: copy as cURL"
+            "fill_form"          -> "browser: fill form"
+            "restore_tabs"       -> "browser: restore tabs"
             "find"               -> "browser: find ${txt ?: sel ?: ""}".trim()
             else                 -> "browser: $action"
         }

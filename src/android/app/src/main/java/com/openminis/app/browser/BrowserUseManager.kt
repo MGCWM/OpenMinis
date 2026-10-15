@@ -394,6 +394,13 @@ class BrowserUseManager(
     var onCloseWindow: (() -> Unit)? = null
 
     /**
+     * [T-android-browser-origin-overrides-2026-10] Fired when the tab starts /
+     * finishes a navigation. The pool uses it to keep the saved-tab set fresh
+     * and to apply per-origin UA / viewport overrides.
+     */
+    var onPageChanged: ((String?) -> Unit)? = null
+
+    /**
      * Callback when the page triggers a file download over http/https
      * (Content-Disposition attachment, <a download>, unrenderable MIME type).
      * TabPool hooks this and streams the URL into the session workspace.
@@ -678,12 +685,16 @@ class BrowserUseManager(
                 // [T-android-browser-observability-v2] Best-effort fallback for
                 // WebViews without DOCUMENT_START_SCRIPT; idempotent in-page.
                 earlyScriptFallback?.let { runCatching { view.evaluateJavascript(it, null) } }
+                onPageChanged?.invoke(url)
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 _isLoading.value = false
                 _currentURL.value = url ?: ""
                 _pageTitle.value = view.title ?: ""
+                // [T-android-browser-origin-overrides-2026-10] Keep the saved-tab
+                // set fresh; the override applier is a per-origin no-op here.
+                onPageChanged?.invoke(url)
                 _canGoBack.value = view.canGoBack()
                 _canGoForward.value = view.canGoForward()
                 navigationDeferred?.complete(Unit)
@@ -1049,16 +1060,7 @@ class BrowserUseManager(
                     },
                 )
             }
-            BrowserAction.GET_NETWORK_LOG -> {
-                val lines = readNetworkLog(input.filter, 100)
-                return BrowserActionResult(
-                    text = if (lines.isEmpty()) {
-                        "No network requests captured for this tab."
-                    } else {
-                        "Network log (last ${lines.size} requests):\n" + lines.joinToString("\n")
-                    },
-                )
-            }
+            BrowserAction.GET_NETWORK_LOG -> return getNetworkLogAction(input)
             BrowserAction.GO_BACK -> {
                 withContext(Dispatchers.Main) { goBack() }
                 return BrowserActionResult(text = "Navigated back (if a previous entry existed)")
@@ -1075,20 +1077,14 @@ class BrowserUseManager(
             BrowserAction.WAIT_FOR -> return waitFor(input.selector, input.text, input.timeoutMs)
             BrowserAction.CLEAR_SITE_DATA -> return clearSiteData()
             BrowserAction.PRESS_KEY -> pressKey(input.key, input.selector)
+            BrowserAction.REPLAY_REQUEST -> return replayRequest(input)
+            BrowserAction.COPY_AS_CURL -> return copyAsCurl(input)
+            BrowserAction.FILL_FORM -> return fillForm(input.fields, input.submit)
             BrowserAction.WAIT_FOR_URL -> return waitForUrl(input.url, input.timeoutMs)
             BrowserAction.WAIT_FOR_COOKIE -> return waitForCookie(input.text, input.timeoutMs)
             BrowserAction.WAIT_FOR_NETWORK_IDLE -> return waitForNetworkIdle(input.timeoutMs, input.amount)
             BrowserAction.EXTRACT_QR -> return extractQr()
-            BrowserAction.GET_RESPONSE_LOG -> {
-                val lines = runCatching { readResponseLog(input.filter) }.getOrDefault(emptyList())
-                return BrowserActionResult(
-                    text = if (lines.isEmpty()) {
-                        "No fetch/XHR responses captured for this tab yet."
-                    } else {
-                        "Response log (last ${lines.size} entries):\n" + lines.joinToString("\n")
-                    },
-                )
-            }
+            BrowserAction.GET_RESPONSE_LOG -> return getResponseLogAction(input)
             BrowserAction.NEW_TAB, BrowserAction.CLOSE_TAB, BrowserAction.LIST_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
         }
@@ -1929,24 +1925,214 @@ class BrowserUseManager(
         )
     }
 
-    /** Captured fetch/XHR response bodies (ring lives in the page). */
-    private suspend fun readResponseLog(filter: String?): List<String> {
-        val raw = evaluateJavascript("JSON.stringify((window.__minis_net__ || []).slice(-200))")
-        val arr = runCatching { org.json.JSONArray(raw) }.getOrNull() ?: return emptyList()
-        val f = filter?.trim()?.takeIf { it.isNotEmpty() }
-        val out = mutableListOf<String>()
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val u = o.optString("u")
-            if (f != null && !u.contains(f, ignoreCase = true)) continue
-            val kind = o.optString("t")
-            val m = o.optString("m")
-            val s = o.optInt("s")
-            val ms = o.optLong("ms")
-            val b = o.optString("b").replace("\n", " ").take(600)
-            out.add("[" + kind + " " + s + " " + ms + "ms] " + m + " " + u + (if (b.isNotBlank()) " body: " + b else ""))
+    // -- [T-android-net-capacity-2026-10] Network log v2 (headers, bodies, paging) --
+
+    private suspend fun getNetworkLogAction(input: BrowserActionInput): BrowserActionResult {
+        val limit = (input.limit ?: 20).coerceIn(1, 100)
+        val offset = (input.offset ?: 0).coerceAtLeast(0)
+        val full = input.full == true
+        val raw = runCatching {
+            evaluateJavascript(BrowserUseJS.networkLogQuery(input.filter, offset, limit, full))
+        }.getOrNull() ?: return BrowserActionResult.error("get_network_log: page did not answer")
+        val json = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("get_network_log: bad JSON from page")
+        val total = json.optInt("total", 0)
+        val entries = json.optJSONArray("entries")
+        val sb = StringBuilder()
+        if (entries == null || entries.length() == 0) {
+            sb.append(
+                "No matching fetch/XHR requests (ring total: $total" +
+                    (input.filter?.let { ", filter: $it" } ?: "") + ").",
+            )
+        } else {
+            sb.appendLine("Fetch/XHR log — ${entries.length()} of $total (offset $offset, newest first, full=$full):")
+            for (i in 0 until entries.length()) {
+                val e = entries.optJSONObject(i) ?: continue
+                sb.appendLine(
+                    "#${e.optInt("id")} [${e.optLong("tf")}ms ago, ${e.optInt("s")}, ${e.optLong("ms")}ms] " +
+                        "${e.optString("m")} ${e.optString("u")}",
+                )
+                val meta = mutableListOf<String>()
+                meta += "resp ${formatBytes(e.optInt("bl", 0))}" + if (e.optBoolean("tb")) " (full stored)" else ""
+                val qb = e.optString("qb")
+                if (qb.isNotEmpty()) meta += "req body: " + qb.replace("\n", " ").take(160)
+                val qh = e.optJSONObject("qh")
+                if (qh != null) {
+                    val names = mutableListOf<String>()
+                    val keys = qh.keys()
+                    while (keys.hasNext()) names += keys.next()
+                    if (names.isNotEmpty()) meta += "req headers: " + names.joinToString(", ")
+                }
+                if (meta.isNotEmpty()) sb.appendLine("    " + meta.joinToString("  ·  "))
+                val body = e.optString("b")
+                if (body.isNotBlank()) sb.appendLine("    body: " + body.replace("\n", " ").replace("\r", " "))
+            }
         }
-        return out.takeLast(20)
+        val trail = readNetworkLog(input.filter, 15)
+        if (trail.isNotEmpty()) {
+            sb.appendLine()
+            sb.appendLine("Page request trail (subresources incl. main frame; last ${trail.size}):")
+            for (line in trail) sb.appendLine("  $line")
+        }
+        return BrowserActionResult(text = sb.toString().trimEnd())
+    }
+
+    private suspend fun getResponseLogAction(input: BrowserActionInput): BrowserActionResult {
+        val limit = (input.limit ?: 20).coerceIn(1, 100)
+        val full = input.full == true
+        val raw = runCatching {
+            evaluateJavascript(BrowserUseJS.networkLogQuery(input.filter, 0, limit, full))
+        }.getOrNull() ?: return BrowserActionResult.error("get_response_log: page did not answer")
+        val json = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("get_response_log: bad JSON from page")
+        val entries = json.optJSONArray("entries")
+        if (entries == null || entries.length() == 0) {
+            return BrowserActionResult(
+                text = "No fetch/XHR responses captured for this tab yet" +
+                    (input.filter?.let { " (filter: $it)" } ?: "") + ".",
+            )
+        }
+        val sb = StringBuilder()
+        sb.appendLine(
+            "Response bodies — last ${entries.length()} fetch/XHR entries " +
+                (if (full) "(full stored bodies where available)" else "(previews; full=true for full bodies)") + ":",
+        )
+        for (i in 0 until entries.length()) {
+            val e = entries.optJSONObject(i) ?: continue
+            sb.appendLine(
+                "[#${e.optInt("id")} ${e.optLong("tf")}ms ago, ${e.optInt("s")}, ${e.optLong("ms")}ms] " +
+                    "${e.optString("m")} ${e.optString("u")} (${formatBytes(e.optInt("bl", 0))}" +
+                    (if (e.optBoolean("tb")) ", full stored" else "") + ")",
+            )
+            val b = e.optString("b")
+            if (b.isNotBlank()) sb.appendLine("    " + b.replace("\n", " ").replace("\r", " ").take(3000))
+        }
+        return BrowserActionResult(text = sb.toString().trimEnd())
+    }
+
+    // -- [T-android-request-replay-2026-10] --
+
+    private suspend fun replayRequest(input: BrowserActionInput): BrowserActionResult {
+        val js = BrowserUseJS.replayRequest(input.index, input.filter, input.method, input.body, input.headers)
+        val raw = awaitPromiseJs(js)
+            ?: return BrowserActionResult.error("replay_request timed out (60s)")
+        val json = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("replay_request: bad result from page")
+        if (json.has("error")) return BrowserActionResult.error("replay_request: ${json.optString("error")}")
+        val sb = StringBuilder()
+        sb.appendLine("Replayed ${json.optString("method")} ${json.optString("url")}")
+        sb.appendLine("  Status: ${json.optInt("status")} (${json.optLong("ms")}ms, ${formatBytes(json.optInt("size", 0))})")
+        val body = json.optString("body")
+        if (body.isNotBlank()) {
+            sb.appendLine("  Body" + (if (json.optBoolean("truncated")) " (first 4000 chars)" else "") + ":")
+            sb.append(body)
+        }
+        return BrowserActionResult(text = sb.toString().trimEnd())
+    }
+
+    // -- [T-android-net-capacity-2026-10] copy_as_curl --
+
+    private suspend fun copyAsCurl(input: BrowserActionInput): BrowserActionResult {
+        val idx = (input.index ?: 1).coerceAtLeast(1)
+        val raw = runCatching {
+            evaluateJavascript(BrowserUseJS.networkLogQuery(input.filter, idx - 1, 1, false))
+        }.getOrNull() ?: return BrowserActionResult.error("copy_as_curl: page did not answer")
+        val json = runCatching { JSONObject(raw) }.getOrNull()
+            ?: return BrowserActionResult.error("copy_as_curl: bad JSON from page")
+        val total = json.optInt("total", 0)
+        val entries = json.optJSONArray("entries")
+        if (entries == null || entries.length() == 0) {
+            return BrowserActionResult(
+                text = "copy_as_curl: no captured request at index $idx" +
+                    (input.filter?.let { " (filter: $it)" } ?: "") + " — $total matching in total.",
+                success = false,
+            )
+        }
+        val e = entries.optJSONObject(0) ?: return BrowserActionResult.error("copy_as_curl: empty entry")
+        val method = e.optString("m", "GET")
+        val url = e.optString("u")
+        val qh = e.optJSONObject("qh")
+        val qb = e.optString("qb").takeIf { it.isNotEmpty() && !it.startsWith("[") }
+        val liveCookie = withContext(Dispatchers.Main) {
+            runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+        }
+        val cmd = StringBuilder("curl")
+        if (!method.equals("GET", ignoreCase = true)) cmd.append(" -X ").append(method)
+        cmd.append(' ').append(shQuote(url))
+        if (qh != null) {
+            val keys = qh.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                when (k.lowercase()) {
+                    "cookie", "host", "content-length" -> {}
+                    else -> cmd.append(" -H ").append(shQuote("$k: ${qh.optString(k)}"))
+                }
+            }
+        }
+        if (!liveCookie.isNullOrEmpty()) cmd.append(" -H ").append(shQuote("Cookie: $liveCookie"))
+        if (qb != null) cmd.append(" --data-raw ").append(shQuote(qb))
+        return BrowserActionResult(
+            text = buildString {
+                appendLine("cURL for #${e.optInt("id")} $method $url:")
+                appendLine()
+                appendLine(cmd.toString())
+                appendLine()
+                append(
+                    "Cookies come from the live browser jar for this URL" +
+                        (if (qb != null) "; body from the captured request (${qb.length} chars)" else "") + ".",
+                )
+            },
+        )
+    }
+
+    // -- [T-android-fill-form-2026-10] Batch form filling --
+
+    private suspend fun fillForm(fieldsJson: String?, submit: Boolean?): BrowserActionResult {
+        if (fieldsJson.isNullOrBlank()) {
+            return BrowserActionResult.error(
+                "fill_form requires 'fields' = a JSON array like " +
+                    "[{\"selector\":\"text=E-mail\",\"value\":\"a@b.c\"},{\"selector\":\"#country\",\"value\":\"CN\",\"action\":\"select\"}]",
+            )
+        }
+        val arr = runCatching { org.json.JSONArray(fieldsJson) }.getOrNull()
+            ?: return BrowserActionResult.error("fill_form: 'fields' is not a JSON array")
+        if (arr.length() == 0) return BrowserActionResult.error("fill_form: empty fields array")
+        val lines = mutableListOf<String>()
+        var ok = 0
+        var lastSelector: String? = null
+        for (i in 0 until arr.length()) {
+            val f = arr.optJSONObject(i) ?: continue
+            val sel = f.optString("selector").takeIf { it.isNotBlank() }
+            if (sel == null) {
+                lines += "  #${i + 1} skipped (no selector)"
+                continue
+            }
+            val action = f.optString("action").lowercase().ifBlank { "fill" }
+            val value = f.optString("value")
+            val r: BrowserActionResult = when (action) {
+                "select" -> selectOption(sel, value)
+                "check", "uncheck", "click", "toggle" -> click(sel, null, null)
+                "press" -> pressKey(value, sel)
+                else -> type(sel, value)
+            }
+            if (r.success) {
+                ok++
+                lines += "  #${i + 1} $action $sel → OK"
+            } else {
+                lines += "  #${i + 1} $action $sel → FAILED: " + r.text.lineSequence().first().take(140)
+            }
+            lastSelector = sel
+            kotlinx.coroutines.delay(120)
+        }
+        var submitNote = ""
+        if (submit == true && lastSelector != null) {
+            val pr = pressKey("Enter", lastSelector)
+            submitNote = "\nSubmit: pressed Enter on $lastSelector — " + if (pr.success) "OK" else pr.text.lineSequence().first().take(140)
+        }
+        return BrowserActionResult(
+            text = "fill_form: $ok/${arr.length()} field(s) applied:\n" + lines.joinToString("\n") + submitNote,
+            success = ok > 0,
+        )
     }
 
     /** Wipe cookies + web storage for the whole WebView profile. */
@@ -2355,6 +2541,20 @@ class BrowserUseManager(
     }
 
     // -- Set User Agent --
+
+    /**
+     * [T-android-browser-origin-overrides-2026-10] Set UA (and profile) only —
+     * no viewport touch, no reload. The pool's per-origin applier owns those,
+     * so a silent switch doesn't fight the viewport override it is about to apply.
+     */
+    fun applyUserAgentQuiet(profile: UserAgentProfile, customUA: String?) {
+        currentProfile = profile
+        val ua = if (profile == UserAgentProfile.CUSTOM && !customUA.isNullOrEmpty()) customUA
+            else profile.userAgentString
+        if (ua != null) {
+            webView.settings.userAgentString = ua
+        }
+    }
 
     /** Set user agent from UI settings (public, non-result). */
     fun setUserAgent(profile: UserAgentProfile, customUA: String? = null) {

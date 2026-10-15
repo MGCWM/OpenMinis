@@ -67,6 +67,24 @@ data class BrowserActionInput(
     val key: String? = null,
     /** Downscale factor for screenshot (0.1–1.5; 1.0 = native size). */
     val scale: Double? = null,
+    /** [T-android-net-capacity-2026-10] 1-based pick from the newest captured request (replay_request / copy_as_curl). */
+    val index: Int? = null,
+    /** HTTP method override for replay_request (default: the captured method). */
+    val method: String? = null,
+    /** Request body override for replay_request (default: the captured body). */
+    val body: String? = null,
+    /** Extra request headers (JSON object string) for replay_request. */
+    val headers: String? = null,
+    /** fill_form: JSON array of {selector, value, action} entries. */
+    val fields: String? = null,
+    /** fill_form: press Enter on the last field when true. */
+    val submit: Boolean? = null,
+    /** get_network_log / get_response_log: return full stored response bodies. */
+    val full: Boolean? = null,
+    /** get_network_log: entries to skip from the newest (paging). */
+    val offset: Int? = null,
+    /** get_network_log / get_response_log: page size. */
+    val limit: Int? = null,
 ) {
     companion object {
         fun parse(json: String): BrowserActionInput? {
@@ -109,6 +127,15 @@ data class BrowserActionInput(
                     toY = if (obj.has("to_y")) obj.optInt("to_y") else null,
                     key = obj.optString("key").ifEmpty { null },
                     scale = if (obj.has("scale")) obj.optDouble("scale") else null,
+                    index = if (obj.has("index")) obj.optInt("index") else null,
+                    method = obj.optString("method").ifEmpty { null },
+                    body = obj.optString("body").ifEmpty { null },
+                    headers = obj.optString("headers").ifEmpty { null },
+                    fields = obj.optString("fields").ifEmpty { null },
+                    submit = if (obj.has("submit")) obj.optBoolean("submit") else null,
+                    full = if (obj.has("full")) obj.optBoolean("full") else null,
+                    offset = if (obj.has("offset")) obj.optInt("offset") else null,
+                    limit = if (obj.has("limit")) obj.optInt("limit") else null,
                 )
             } catch (_: Exception) {
                 null
