@@ -689,6 +689,24 @@ object BrowserUseJS {
                     if (!el) return JSON.stringify({error: 'Element not found: $sel'});
                     var innerTextVal = el.innerText || '';
                     var textContentVal = el.textContent || '';
+                    // [T-android-gettext-form-values-2026-10] Form controls
+                    // carry their content in `value`, not innerText — a bare
+                    // get_text on an input/textarea/select used to return an
+                    // empty string right after a successful type/fill_form.
+                    // Report the value for those, plus the selected option's
+                    // label for selects, so the agent can verify what it typed.
+                    var tag = (el.tagName || '').toUpperCase();
+                    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+                        var v = (el.value != null) ? String(el.value) : '';
+                        var extra = '';
+                        if (tag === 'SELECT' && el.selectedOptions && el.selectedOptions.length) {
+                            var labels = [];
+                            for (var si = 0; si < el.selectedOptions.length; si++) labels.push(el.selectedOptions[si].label || el.selectedOptions[si].value);
+                            extra = labels.join(', ');
+                        }
+                        text = (v + (extra && extra !== v ? ' (' + extra + ')' : '')).substring(0, 10000);
+                        return JSON.stringify({text: text, length: text.length, value: v, kind: 'value'});
+                    }
                     var text = innerTextVal.substring(0, 10000);
                     return JSON.stringify({text: text, length: text.length});
                 })()
@@ -1175,7 +1193,7 @@ object BrowserUseJS {
             if (f && String(e.u).toLowerCase().indexOf(f) < 0) continue;
             cands.push(e);
           }
-          if (!cands.length) return {error: 'no captured fetch/XHR request matches' + (f ? (' filter=' + f) : ' (ring: ' + ring.length + ' entries)')};
+          if (!cands.length) return {error: 'no captured fetch/XHR request matches' + (f ? (' filter=' + f) : ' (ring: ' + ring.length + ' entries)') + '. Note: only in-page fetch/XHR is captured — the main document navigation is not (it has no request body to replay); navigate first if the request you want was fired by the page before capture.'};
           var idx = ${(index ?: 1).coerceAtLeast(1)};
           var e2 = cands[cands.length - idx];
           if (!e2) return {error: 'index ' + idx + ' is out of range (' + cands.length + ' matching requests)'};

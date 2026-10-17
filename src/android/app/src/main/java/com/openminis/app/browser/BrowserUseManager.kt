@@ -1095,7 +1095,12 @@ class BrowserUseManager(
                     text = if (lines.isEmpty()) {
                         "No console output captured for this tab."
                     } else {
-                        "Console log (last ${lines.size} entries):\n" + lines.joinToString("\n")
+                        // [T-android-console-crosspage-note-2026-10] The trail
+                        // deliberately survives navigation so a log fired
+                        // right before a redirect is still readable; say so,
+                        // or entries from the previous page look like noise
+                        // from the current one.
+                        "Console log (last ${lines.size} entries; spans pages loaded in this tab — entries may predate the current page):\n" + lines.joinToString("\n")
                     },
                 )
             }
@@ -1449,7 +1454,17 @@ class BrowserUseManager(
                 scale = k,
             )
         }
-        val bitmap = captureWebViewBitmap()
+        // [T-android-shot-gpu-first-2026-10] A detached pool WebView's
+        // rasterised tiles are dropped by Chromium; the software draw then
+        // re-rasters asynchronously and `View.draw` reads back a half-painted
+        // frame — heavy pages (GitCode dashboard) and GPU layers (WebGL
+        // canvases) came out uniformly grey/blank while the DOM was fine.
+        // The GPU path (HeadlessRenderHost) parents the WebView into a real
+        // virtual-display window for the capture and waits for a settled
+        // composited frame, which is exactly this case. Try it first; any
+        // failure (null) falls through to the software draw, so the worst
+        // case is the previous behaviour.
+        val bitmap = captureWebViewBitmap(gpu = true) ?: captureWebViewBitmap()
             ?: return BrowserActionResult.error("Failed to capture screenshot")
         return finishScreenshot(bitmap, scale = k)
     }
@@ -1739,7 +1754,11 @@ class BrowserUseManager(
         }
         delay(250) // let scrollIntoView settle
         val density = withContext(Dispatchers.Main) { webView.resources.displayMetrics.density }
-        val bitmap = captureWebViewBitmap()
+        // [T-android-shot-gpu-first-2026-10] Same rationale as screenshot():
+        // the software draw of a detached WebView misses GPU-composited
+        // layers and half-rastered frames; prefer the GPU capture path and
+        // fall back to software when it does not apply.
+        val bitmap = captureWebViewBitmap(gpu = true) ?: captureWebViewBitmap()
             ?: return BrowserActionResult.error("Failed to capture the viewport")
         val phys = withContext(Dispatchers.Main) { webView.width to webView.height }
         if (phys.first <= 0 || phys.second <= 0) {
@@ -2024,11 +2043,16 @@ class BrowserUseManager(
             val density = webView.resources.displayMetrics.density
             var w = webView.width
             var h = webView.height
-            if (w <= 0 || h <= 0) {
-                // Profile sizes are CSS px; scale to physical px so the CSS
-                // viewport actually matches. See applyViewport() for context.
-                val targetW = (vp.first * density).toInt().coerceAtLeast(1)
-                val targetH = (vp.second * density).toInt().coerceAtLeast(1)
+            // [T-android-shot-layout-sync-2026-10] A stale layout box is as
+            // bad as none: after set_viewport/reset the pool re-asserts the
+            // CSS size, but if any path skipped the re-layout the capture
+            // still produced buffers at the PREVIOUS size (observed: profile
+            // 412x915 reported, 2688x1512 bitmap out). Validate the box
+            // against the profile on EVERY capture and re-measure when they
+            // disagree — not just when w<=0.
+            val targetW = (vp.first * density).toInt().coerceAtLeast(1)
+            val targetH = (vp.second * density).toInt().coerceAtLeast(1)
+            if (w != targetW || h != targetH) {
                 webView.measure(
                     android.view.View.MeasureSpec.makeMeasureSpec(targetW, android.view.View.MeasureSpec.EXACTLY),
                     android.view.View.MeasureSpec.makeMeasureSpec(targetH, android.view.View.MeasureSpec.EXACTLY),
@@ -2245,7 +2269,9 @@ class BrowserUseManager(
         if (entries == null || entries.length() == 0) {
             return BrowserActionResult(
                 text = "copy_as_curl: no captured request at index $idx" +
-                    (input.filter?.let { " (filter: $it)" } ?: "") + " — $total matching in total.",
+                    (input.filter?.let { " (filter: $it)" } ?: "") + " — $total matching in total." +
+                    " Only in-page fetch/XHR requests are captured (the main document navigation is not);" +
+                    " trigger the request from the page, or check get_network_log's page request trail.",
                 success = false,
             )
         }
@@ -2895,7 +2921,15 @@ class BrowserUseManager(
             }
         }
         val vp = newProfile.viewportSize
-        return BrowserActionResult(text = "Switched to ${newProfile.value} (${vp.first}x${vp.second})")
+        // [T-android-ua-response-clarity-2026-10] The viewport half of this
+        // message only lands on the NEXT navigation (the CSS viewport is
+        // snapshotted at load time), which made the old text look like a lie
+        // when get_page_info still showed the old size right after switching.
+        val reloaded = _currentURL.value.isNotEmpty()
+        return BrowserActionResult(
+            text = "Switched to ${newProfile.value} (${vp.first}x${vp.second})" +
+                (if (reloaded) " — page reloaded, new viewport in effect" else " — applies on the next navigation"),
+        )
     }
 
     // -- User Navigation --
