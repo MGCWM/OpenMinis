@@ -63,6 +63,15 @@ object ThinkingLevelCatalog {
         // Covers both the bare `deepseek-flash` DeepSeek now recommends and the
         // legacy `deepseek-v4-*` alias.
         Rule({ it.startsWith("deepseek-flash") || it.contains("deepseek-v4") }, ThinkingLevel.MAX),
+        // [T-android-modelsdev-namespace-alias] GLM-5.3 family: the catalog
+        // declares effort tiers [low, high, max] (zhipuai and 20+ relays in
+        // the bundled snapshot — verified). This rule is the floor for when
+        // the snapshot lookup misses, e.g. a namespace-prefixed relay id the
+        // alias walk cannot map: without it catalogMaxThinkingLevel falls to
+        // the XHIGH default and `max` vanishes from the picker (field report:
+        // "cn:glm-5.3 — 只能超高吗?"). glm-5.3-flash declares the same ladder;
+        // glm-5v-turbo declares no effort tiers and does not match.
+        Rule({ it.contains("glm-5.3") }, ThinkingLevel.MAX),
         // Anthropic Opus 4.x adaptive-thinking family. The old per-version
         // startsWith("claude-opus-4.7"/"claude-opus-4.6") checks never matched:
         // LLMModel.id separates the minor version with a hyphen

@@ -2943,6 +2943,23 @@ class ChatViewModel(
         }
 
     /**
+     * [T-android-thinking-reclamp-on-switch] After a model/group switch,
+     * bring an over-range level back under the NEW ceiling — in memory only.
+     * The stored override (DB) is deliberately untouched: the user's original
+     * choice must come back when they return to a model that can reach it.
+     * Without this, the header badge kept showing the OLD model's level (e.g.
+     * 极高/MAX) while the picker could only offer up to the new ceiling
+     * (超高/XHIGH) — the two disagreed and neither told the other.
+     */
+    private fun reclampThinkingLevelForCurrentModel() {
+        val ceiling = currentModelMaxThinkingLevel
+        val current = _thinkingLevel.value
+        if (current.rank > ceiling.rank) {
+            _thinkingLevel.value = ceiling
+        }
+    }
+
+    /**
      * [T-android-thinking-level-arch] Levels the chat composer picker should
      * offer: everything up to the current model's ceiling, EXCLUDING OFF —
      * mirrors iOS availableThinkingLevels (`filter { $0 != .off && $0 <= max }`).
@@ -7238,6 +7255,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId"}""")
             applyGroupSessionDefaults(groupId)
+            reclampThinkingLevelForCurrentModel()
         }
     }
 
@@ -7251,6 +7269,7 @@ class ChatViewModel(
         if (resolved) {
             persistBinding("""{"type":"group","groupId":"$groupId","lastEntryId":"$entryId"}""")
             applyGroupSessionDefaults(groupId)
+            reclampThinkingLevelForCurrentModel()
             // [T-newchat-default-model-fallback-android] Record the actually-
             // resolved active entry as last-used (resolveProviderFromGroup may
             // fall back off a disabled member, so _activeEntryId is the truth).
@@ -7385,6 +7404,7 @@ class ChatViewModel(
         // global last-used model so the NEXT new chat (when no default group
         // is set) defaults back to it. Tier 2 of the new-chat fallback chain.
         providerRepository.lastUsedEntryId = entryId
+        reclampThinkingLevelForCurrentModel()
     }
 
     /** Persist the model binding to the DB session (no-op for draft sessions). */

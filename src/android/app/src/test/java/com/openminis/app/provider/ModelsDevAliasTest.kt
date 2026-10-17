@@ -182,9 +182,13 @@ class ModelsDevAliasTest {
             val c = candidates(id)
             assertEquals("duplicate candidates for $id: $c", c.size, c.distinct().size)
             for (i in 1 until c.size) {
+                // Non-increasing rather than strictly shrinking: with the
+                // [T-android-modelsdev-namespace-alias] pass a namespace form
+                // and a shortened original can share a length
+                // (`gpt-5-codex-preview` vs `openai:gpt-5-codex`).
                 assertTrue(
-                    "candidate $i is not shorter than ${i - 1} for $id: $c",
-                    c[i].length < c[i - 1].length,
+                    "candidate $i is longer than ${i - 1} for $id: $c",
+                    c[i].length <= c[i - 1].length,
                 )
             }
         }
@@ -197,6 +201,28 @@ class ModelsDevAliasTest {
     // accuracy: an aggregate is a MAXIMUM over a family, so applying it to a
     // direct Anthropic or OpenAI connection could replace a precisely-known
     // context window with a larger sibling's.
+
+    // ── [T-android-modelsdev-namespace-alias] `ns:` region/vendor prefixes ──
+
+    @Test
+    fun `a namespace prefix reaches the catalogued base id`() {
+        // WorkBuddy publishes `cn:glm-5.3`; the catalog only knows `glm-5.3`.
+        // Before this, the walk stopped at `cn:glm` and the model got no
+        // metadata — no declared effort tiers, so its thinking ceiling fell
+        // back to XHIGH and `max` was unreachable in the picker.
+        val c = candidates("cn:glm-5.3")
+        assertEquals("cn:glm-5.3", c.first())
+        assertTrue("must reach the catalogued base: $c", c.contains("glm-5.3"))
+        val g = candidates("global:glm-5.3-flash")
+        assertTrue("must reach the catalogued base: $g", g.contains("glm-5.3-flash"))
+    }
+
+    @Test
+    fun `a namespace strip honours the segment floor`() {
+        // `cn:glm` may not degrade to the bare generic head `glm`.
+        assertFalse(candidates("cn:glm").contains("glm"))
+        assertTrue(candidates("cn:glm").contains("cn:glm"))
+    }
 
     @Test
     fun `a third-party endpoint is unrecognized and a first-party one is not`() {

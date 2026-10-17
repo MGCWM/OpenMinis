@@ -148,18 +148,60 @@ object ModelsDevApi {
     private const val MIN_ALIAS_SEGMENTS = 2
 
     internal fun aliasCandidates(modelId: String): List<String> {
-        val out = mutableListOf(modelId)
-        var current = modelId
-        while (true) {
-            val cut = current.lastIndexOfAny(charArrayOf('-', ':'))
-            if (cut <= 0) break
-            current = current.substring(0, cut)
-            // Count segments by BOTH separators — `openai:gpt-5` is 3.
-            val segments = current.split('-', ':').count { it.isNotEmpty() }
-            if (segments < MIN_ALIAS_SEGMENTS) break
-            if (current != modelId) out.add(current)
+        val out = LinkedHashSet<String>()
+        out.add(modelId)
+        // [T-android-modelsdev-namespace-alias] Relays namespace their ids by
+        // region or vendor — `cn:glm-5.3` / `global:glm-5.3-flash`
+        // (WorkBuddy, observed live). The shortening walk below cuts at the
+        // LAST separator, so those ids only ever produced `cn:glm` /
+        // `global:glm-5.3` and never the plain catalogued `glm-5.3`: the
+        // model got NO models.dev metadata at all — no declared effort tiers
+        // (its thinking picker ceiling fell back to XHIGH, so `max` was
+        // unreachable), no context window, no modalities. Also offer the id
+        // with leading `ns:` segments dropped, subject to the same
+        // specificity floor.
+        val stripped = namespaceStripped(modelId)
+        if (stripped != null) out.add(stripped)
+        for (base in listOfNotNull(modelId, stripped)) {
+            var current = base
+            while (true) {
+                val cut = current.lastIndexOfAny(charArrayOf('-', ':'))
+                if (cut <= 0) break
+                current = current.substring(0, cut)
+                // Count segments by BOTH separators — `openai:gpt-5` is 3.
+                val segments = current.split('-', ':').count { it.isNotEmpty() }
+                if (segments < MIN_ALIAS_SEGMENTS) break
+                out.add(current)
+            }
         }
-        return out
+        // Longest first (stable sort): the most specific catalogued entry
+        // wins, and equal-length candidates keep production order. The sort
+        // matters once the namespace form exists — `gpt-5-codex-preview` and
+        // `openai:gpt-5-codex` can tie on length.
+        return out.sortedByDescending { it.length }
+    }
+
+    /**
+     * [T-android-modelsdev-namespace-alias] `cn:glm-5.3` → `glm-5.3`,
+     * `global:glm-5.3-flash` → `glm-5.3-flash`. Returns the LAST namespace
+     * strip that still leaves at least [MIN_ALIAS_SEGMENTS] segments — the
+     * same floor the shortening walk enforces, so `cn:glm` cannot degrade to
+     * the generic head `glm`. Null when the id has no `ns:` head (or only a
+     * too-short remainder).
+     */
+    private fun namespaceStripped(modelId: String): String? {
+        var cur = modelId
+        var last: String? = null
+        while (true) {
+            val colon = cur.indexOf(':')
+            if (colon <= 0) break
+            cur = cur.substring(colon + 1)
+            if (cur.isEmpty()) break
+            val segments = cur.split('-', ':').count { it.isNotEmpty() }
+            if (segments < MIN_ALIAS_SEGMENTS) break
+            last = cur
+        }
+        return last
     }
 
     /**
