@@ -41,13 +41,21 @@ class ScreenshotGpuFirstWiringTest {
     }
 
     @Test
-    fun `captures re-sync the layout box with the viewport profile every time`() {
+    fun `captures re-sync the layout box with the applied viewport every time`() {
         // set_viewport/reset used to strand the capture at the PREVIOUS
         // physical size (profile 412x915, 2688x1512 bitmap out). The box is
-        // now validated against the profile on EVERY capture, not just when
-        // w<=0.
+        // now validated against the applied viewport on EVERY capture, not
+        // just when w<=0. The authority is lastAppliedViewport (the session
+        // override the pool applied) — NOT the UA profile, which would fight
+        // a set_viewport 800x600 and shrink the capture back to 412x915.
         assertTrue(
             manager.contains("if (w != targetW || h != targetH) {"),
+        )
+        val captureFun = Regex("""captureWebViewBitmap\(gpu: Boolean.*?HeadlessRenderHost\.capture""", RegexOption.DOT_MATCHES_ALL)
+            .find(manager)?.value ?: ""
+        assertTrue(
+            "capture validates against lastAppliedViewport first",
+            captureFun.contains("lastAppliedViewport ?: currentProfile.viewportSize"),
         )
     }
 }

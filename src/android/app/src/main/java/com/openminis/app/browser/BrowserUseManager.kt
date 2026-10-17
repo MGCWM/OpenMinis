@@ -2039,7 +2039,6 @@ class BrowserUseManager(
             // WebView may be detached (pool-owned, never added to a window), so
             // width/height can be 0. Ensure it has a layout box matching the
             // agent viewport before drawing.
-            val vp = currentProfile.viewportSize
             val density = webView.resources.displayMetrics.density
             var w = webView.width
             var h = webView.height
@@ -2048,8 +2047,15 @@ class BrowserUseManager(
             // CSS size, but if any path skipped the re-layout the capture
             // still produced buffers at the PREVIOUS size (observed: profile
             // 412x915 reported, 2688x1512 bitmap out). Validate the box
-            // against the profile on EVERY capture and re-measure when they
-            // disagree — not just when w<=0.
+            // against the APPLIED viewport on EVERY capture and re-measure
+            // when they disagree — not just when w<=0.
+            //
+            // The authority is `lastAppliedViewport` (what applyViewport last
+            // laid out — includes the pool's session override), NOT
+            // currentProfile: the profile is the UA default (412x915) and
+            // re-asserting it here would fight set_viewport's 800x600, right
+            // after the pool had correctly laid the bigger box out.
+            val vp = lastAppliedViewport ?: currentProfile.viewportSize
             val targetW = (vp.first * density).toInt().coerceAtLeast(1)
             val targetH = (vp.second * density).toInt().coerceAtLeast(1)
             if (w != targetW || h != targetH) {
