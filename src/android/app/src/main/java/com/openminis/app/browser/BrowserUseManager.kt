@@ -1139,6 +1139,17 @@ class BrowserUseManager(
 
         // Auto-capture screenshot after visual-change actions
         if (result.success && BrowserAction.visualChangeActions.contains(input.action)) {
+            // [T-android-selection-cleanup-2026-10] A long-press (or a drag /
+            // coordinate tap that lands on text) leaves the WebView in its
+            // text-selection state. The highlighted region then persists on
+            // the page — users saw a giant blue selection "dome" over the
+            // content after an automation session — and it pollutes later
+            // screenshots and text-based hit testing. Collapse the selection
+            // after every side-effecting action; typing/copy flows that need
+            // a selection establish their own.
+            runCatching {
+                evaluateJavascript(BrowserUseJS.CLEAR_SELECTION_JS)
+            }
             result = attachSnapshot(result)
         }
 

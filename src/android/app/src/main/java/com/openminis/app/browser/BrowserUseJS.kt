@@ -1277,4 +1277,30 @@ object BrowserUseJS {
             })()
         """.trimIndent()
     }
+
+    /**
+     * [T-android-selection-cleanup-2026-10] Collapse any active text
+     * selection and drop selection handles. Idempotent, cheap, safe to run
+     * after every action. Also blurs an actively focused contenteditable is
+     * NOT done here — typing flows need focus; this only clears selection.
+     */
+    val CLEAR_SELECTION_JS: String = """
+        (function() {
+            try {
+                var sel = window.getSelection();
+                if (sel) {
+                    if (sel.rangeCount > 0 && sel.isCollapsed === false) sel.removeAllRanges();
+                    if (typeof sel.collapseToEnd === 'function') sel.collapseToEnd();
+                }
+                if (document.activeElement &&
+                    document.activeElement !== document.body &&
+                    document.activeElement.tagName !== 'INPUT' &&
+                    document.activeElement.tagName !== 'TEXTAREA' &&
+                    document.activeElement.isContentEditable) {
+                    document.activeElement.blur();
+                }
+                return 'ok';
+            } catch (e) { return 'err'; }
+        })()
+    """.trimIndent()
 }
