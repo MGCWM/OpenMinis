@@ -2359,7 +2359,6 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         val probeCookie = if (probeUrl != null) withContext(Dispatchers.Main) {
             runCatching { android.webkit.CookieManager.getInstance().getCookie(probeUrl) }.getOrNull()
         } else null
-        val probeUsable = probeUrl != null && !(crossDomainProbe && probeCookie.isNullOrBlank())
         var probeLine: String? = null
         if (probeUrl != null) {
             val domainNote = when {
@@ -2370,16 +2369,21 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                 else ->
                     "\n  Note: probe host ($probeHost) differs from the session host ($targetHost); it runs with its own cookie jar."
             }
-            probeLine = if (!probeUsable) {
-                "  Login probe: NOT ARMED — cross-domain probe with an empty cookie jar always reads DEAD. " +
-                    "Put probe_url on the same domain as url."
+            // [T-android-keepalive-probe-v3-2026-10] Browser channel first: a
+            // strict WAF (Huawei devdata) rejects curl/native TLS at the
+            // ClientHello while the WebView sails through — and the WebView is
+            // the user's real session. Cookie-domain coupling disappears too
+            // (a navigation carries the jar automatically), so the old
+            // cross-domain refusal now applies only to the native fallback.
+            val viaBrowser = runBrowserProbe(probeUrl, probeRule)
+            probeLine = if (viaBrowser.first != null) {
+                viaBrowser.second
+            } else if (crossDomainProbe && probeCookie.isNullOrBlank()) {
+                viaBrowser.second + "\n  Native fallback would always read DEAD here (probe host has no cookies; " +
+                    "the session lives on $targetHost) — retry, or put probe_url on the same domain."
             } else {
-                val base = runProbe(probeUrl!!, probeRule, probeCookie, ua)
-                base + if (probeCookie.isNullOrBlank() && !crossDomainProbe) {
-                    "\n  Warning: the jar has no cookies for this probe URL — an anonymous probe can read DEAD/403 on a live session."
-                } else {
-                    domainNote
-                }
+                viaBrowser.second + "\n" + runProbe(probeUrl, probeRule, probeCookie, ua) +
+                    "\n  (native fallback used — strict WAFs can false-negative this channel)"
             }
         }
         val sb = StringBuilder()
@@ -2404,12 +2408,22 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         if (envPath != null && pairs.isNotEmpty()) {
             val host = runCatching { java.net.URI(target).host }.getOrNull() ?: "site"
             sb.appendLine("  ${pairs.size} cookie(s) exported → $envPath")
-            val shell = buildKeepAliveShell(envPath, target, if (probeUsable) probeUrl else null, probeRule, crossDomainProbe)
-            val watchTarget = if (probeUsable) "login probe ($probeUrl)" else target
-            if (probeUrl != null && !probeUsable) {
+            // [T-android-keepalive-probe-v3-2026-10] With a probe present the
+            // watch drives THIS app's browser through minis-browser-use — the
+            // same TLS stack the user browses with, so strict WAFs that block
+            // curl at the ClientHello still answer truthfully, at the cost of
+            // one CLI call per fire (no model turn). Without a probe the old
+            // lightweight curl ping stays.
+            val shell = if (probeUrl != null) {
+                buildBrowserProbeWatchShell(target, probeUrl, input.probeExpect)
+            } else {
+                buildKeepAliveShell(envPath, target, null, null, false)
+            }
+            val watchTarget = if (probeUrl != null) "browser probe ($probeUrl)" else target
+            if (probeUrl != null) {
                 sb.appendLine(
-                    "  Warning: the probe was dropped from the watch — a cross-domain probe with no cookies " +
-                        "would always read DEAD. Arm again with probe_url on the same domain.",
+                    "  Probe channel: in-app WebView (real browser TLS — the channel strict WAFs can't fingerprint out). " +
+                        "A status-only rule degrades to 'no login redirect' there; bodycontains:<marker> stays definitive.",
                 )
             }
             sb.appendLine(
@@ -2425,7 +2439,12 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                     append("m --count ")
                     append(fires)
                     append(" --command-timeout 2m --prompt ")
-                    append(poolShQuote("keep-alive $host：若输出含 SESSION-DEAD，马上提醒用户会话已失效、需要重新登录（附当前时间）"))
+                    append(
+                        poolShQuote(
+                            "keep-alive $host：输出含 SESSION-DEAD 就马上提醒用户会话已失效、需要重新登录（附当前时间）；" +
+                                "含 PROBE-INCONCLUSIVE 则记录即可，不用报警",
+                        ),
+                    )
                     append(" --command ")
                     append(poolShQuote(shell))
                 },
@@ -2537,6 +2556,130 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             else -> " — SESSION LOOKS DEAD, log in again"
         }
         return "  Login probe: HTTP $code on $url (expects $ruleText)$verdict"
+    }
+
+    /**
+     * [T-android-keepalive-probe-v3-2026-10] Dedicated background tab for
+     * browser-channel probes — never the user's working tab.
+     */
+    private var probeTabId: Int = -1
+
+    /** JSON string quoting for the CLI payload (no org.json dependency here). */
+    private fun poolJsonQuote(s: String): String {
+        val sb = StringBuilder("\"")
+        for (ch in s) {
+            when (ch) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                else -> sb.append(ch)
+            }
+        }
+        return sb.append('"').toString()
+    }
+
+    /** Minimal login-landing heuristic (host change or login-ish path). */
+    private fun looksLikeLoginLanding(requested: String, landed: String): Boolean {
+        if (landed.isBlank()) return false
+        fun norm(u: String) = u.substringBefore('#').trimEnd('/').lowercase()
+        if (norm(requested) == norm(landed)) return false
+        val landedHost = runCatching { java.net.URI(landed).host?.lowercase() }.getOrNull()
+        val reqHost = runCatching { java.net.URI(requested).host?.lowercase() }.getOrNull()
+        if (landedHost != null && reqHost != null && landedHost != reqHost) return true
+        val l = landed.lowercase()
+        return l.contains("/login") || l.contains("sso") || l.contains("signin") || l.contains("auth/")
+    }
+
+    /**
+     * [T-android-keepalive-probe-v3-2026-10] Browser-channel probe: navigate a
+     * dedicated background tab to the probe URL and judge by WHAT LANDED —
+     * the WebView is the only stack strict WAFs let through, and navigation
+     * carries the live cookie jar automatically. Returns (verdict?, line);
+     * verdict == null means the channel was unavailable (caller falls back).
+     */
+    private suspend fun runBrowserProbe(url: String, rule: ProbeRule?): Pair<Boolean?, String> {
+        val tab = withContext(Dispatchers.Main) {
+            _tabs.value.firstOrNull { it.id == probeTabId } ?: run {
+                val tabs = _tabs.value.toMutableList()
+                createTab(tabs, owner = null)?.also { probeTabId = it.id }
+            }
+        } ?: return null to "  Login probe (browser): could not allocate a probe tab"
+
+        val nav = execute(
+            BrowserActionInput(action = BrowserAction.NAVIGATE, url = url, tabId = tab.id),
+            singleTab = true,
+            owner = null,
+        )
+        if (!nav.success) {
+            return null to "  Login probe (browser): navigation failed — " +
+                nav.text.lineSequence().first().take(140)
+        }
+        val mgr = _tabs.value.firstOrNull { it.id == tab.id }?.manager
+            ?: return null to "  Login probe (browser): probe tab vanished"
+        val landed = mgr.currentURL.value
+        val bodyRes = execute(
+            BrowserActionInput(action = BrowserAction.GET_TEXT, tabId = tab.id),
+            singleTab = true,
+            owner = null,
+        )
+        val body = if (bodyRes.success) bodyRes.text else ""
+        val loginLanding = looksLikeLoginLanding(url, landed)
+        val verdict = when (rule) {
+            is ProbeRule.BodyContains -> {
+                val hit = body.contains(rule.text, ignoreCase = true)
+                if (hit) {
+                    "  Login probe (browser): marker \"${rule.text.take(40)}\" found — session looks ALIVE " +
+                        "(landed $landed, page ${body.length} chars)"
+                } else {
+                    "  Login probe (browser): marker \"${rule.text.take(40)}\" NOT found (landed $landed, " +
+                        "page ${body.length} chars" + (if (loginLanding) "; looks like a login redirect" else "") +
+                        ") — SESSION LOOKS DEAD, log in again"
+                }
+            }
+            is ProbeRule.Status -> "  Login probe (browser): landed $landed " +
+                if (loginLanding) {
+                    "(redirected — looks like a login page) — SESSION LOOKS DEAD"
+                } else {
+                    "(no login redirect) — session looks ALIVE " +
+                        "(a status code isn't observable through the WebView; prefer bodycontains:<marker> for an exact rule)"
+                }
+            null -> "  Login probe (browser): landed $landed — " +
+                if (loginLanding) {
+                    "redirected to a login page: SESSION LOOKS DEAD"
+                } else {
+                    "reachable, no login redirect: session looks ALIVE (no marker rule set)"
+                }
+        }
+        val ok: Boolean = when (rule) {
+            is ProbeRule.BodyContains -> body.contains(rule.text, ignoreCase = true)
+            is ProbeRule.Status -> !loginLanding
+            null -> !loginLanding
+        }
+        return ok to verdict
+    }
+
+    /**
+     * [T-android-keepalive-probe-v3-2026-10] Watch body for a probe: drive the
+     * app's browser through the sandbox CLI instead of curl — one CLI call per
+     * fire (no model turn), and the request leaves through the real WebView
+     * TLS stack so a strict WAF can't fingerprint it out.
+     */
+    private fun buildBrowserProbeWatchShell(target: String, probeUrl: String, probeExpect: String?): String {
+        val payload = StringBuilder("{\"action\":\"keep_alive\",\"url\":")
+            .append(poolJsonQuote(target))
+            .append(",\"probe_url\":")
+            .append(poolJsonQuote(probeUrl))
+        if (!probeExpect.isNullOrBlank()) {
+            payload.append(",\"probe_expect\":").append(poolJsonQuote(probeExpect.trim()))
+        }
+        payload.append('}')
+        val cli = "minis-browser-use --json " + poolShQuote(payload.toString())
+        return "OUT=\$($cli 2>&1); " +
+            "if echo \"\$OUT\" | grep -q \"session looks ALIVE\"; then echo \"keep-alive OK (browser probe)\"; " +
+            "elif echo \"\$OUT\" | grep -q \"SESSION LOOKS DEAD\"; then echo \"SESSION-DEAD — 会话已失效，需重新登录\"; " +
+            "else echo \"PROBE-INCONCLUSIVE — 浏览器探针通道暂不可用，本次未判定（不按掉线处理）\"; fi"
     }
 
     /**
