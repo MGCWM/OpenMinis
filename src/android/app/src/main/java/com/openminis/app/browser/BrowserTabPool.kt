@@ -215,6 +215,41 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     private var replaying = false
     private val replayStack = mutableSetOf<String>()
 
+    /**
+     * [T-android-macro-journal-2026-10] C-9: rolling journal of every
+     * state-changing action this session, independent of `record_start` — so
+     * the whole day's flow can be exported as a macro after the fact.
+     */
+    private val actionJournal = mutableListOf<JSONObject>()
+
+    /**
+     * [T-android-net-trail-carryover-2026-10] C-10: native request trails of
+     * tabs that were rebuilt mid-session. The rich page-side ring dies with
+     * the renderer (physics of the architecture), but the native trail lives
+     * in Kotlin — carrying it here keeps crash forensics available after the
+     * tab swap.
+     */
+    private val crossTabTrail = ArrayDeque<String>()
+
+    /**
+     * [T-android-pool-notices-2026-10] C-11: one-shot notices for tab
+     * evictions. Evictions used to be silent — the tab simply vanished and
+     * only list_tabs revealed it. Drained onto the next action result.
+     */
+    private val poolNotices = ArrayDeque<String>()
+
+    private fun postPoolNotice(line: String) {
+        poolNotices.addLast(line)
+        while (poolNotices.size > 20) poolNotices.removeFirst()
+    }
+
+    private fun drainPoolNotices(): String? {
+        if (poolNotices.isEmpty()) return null
+        val lines = poolNotices.toList()
+        poolNotices.clear()
+        return lines.joinToString("\n", postfix = "\n")
+    }
+
     /** Read-only actions that would only add noise to a recorded macro. */
     private val recordSkipActions = setOf(
         BrowserAction.GET_TEXT, BrowserAction.GET_READABLE, BrowserAction.GET_PAGE_INFO,
@@ -451,6 +486,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // Macros are per-chat too; drop the cache so the new session's file loads.
         macros.clear()
         macrosLoaded = false
+        actionJournal.clear()
         loadSavedState()
     }
 
@@ -737,11 +773,16 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // [T-android-browser-macros-2026-10] Record hook. Sits above ALL
         // routing so every action lands in the buffer; replay sets `replaying`
         // to keep its own expansion out of the recording.
-        if (recording && !replaying &&
-            input.action != BrowserAction.RECORD_START && input.action != BrowserAction.RECORD_STOP &&
+        if (!replaying && input.action != BrowserAction.RECORD_START &&
+            input.action != BrowserAction.RECORD_STOP && input.action != BrowserAction.EXPORT_MACRO &&
             input.action !in recordSkipActions
         ) {
-            recordBuffer.add(input.toRecordJson())
+            val step = input.toRecordJson()
+            // [T-android-macro-journal-2026-10] Journal first (bounded), then the
+            // recording buffer when recording is armed.
+            actionJournal.add(step)
+            if (actionJournal.size > 400) actionJournal.removeAt(0)
+            if (recording) recordBuffer.add(step)
         }
         // [T-android-browser-tab-ownership-newtab] The ownership check is
         // PER ACTION, not a blanket pre-check, matching iOS
@@ -788,6 +829,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             BrowserAction.RUN_MACRO -> runMacro(input, singleTab, owner)
             BrowserAction.LIST_MACROS -> listMacros()
             BrowserAction.KEEP_ALIVE -> keepAlive(input)
+            BrowserAction.EXPORT_MACRO -> exportMacro(input)
             else -> {
                 ownershipViolation(input.tabId)?.let { return it }
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit
@@ -911,9 +953,20 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
      */
     private fun networkTrailAppendix(tab: Tab): String {
         val trail = runCatching { tab.manager.readNetworkLog(null, 12) }.getOrDefault(emptyList())
-        if (trail.isEmpty()) return ""
-        return "\nNetwork requests fired during the action (native trail, oldest first):\n" +
-            trail.joinToString("\n") { "  $it" }
+        val archived = crossTabTrail.takeLast(12)
+        if (trail.isEmpty() && archived.isEmpty()) return ""
+        val sb = StringBuilder()
+        sb.append("\nNetwork requests fired during the action (native trail, oldest first):")
+        if (trail.isNotEmpty()) {
+            trail.forEach { sb.append("\n  ").append(it) }
+        } else {
+            sb.append("\n  (this tab recorded none)")
+        }
+        if (archived.isNotEmpty()) {
+            sb.append("\nEarlier tab(s) in this session — last requests before they were replaced:")
+            archived.forEach { sb.append("\n  [prev-tab] ").append(it) }
+        }
+        return sb.toString()
     }
 
     /**
@@ -1002,7 +1055,10 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             } else {
                 withDialogs
             }
-            stampTabId(withRebuild.copy(pageURL = tab.manager.currentURL.value), tab.id)
+            // [T-android-pool-notices-2026-10] C-11: one-shot eviction notices,
+            // prepended so they're read before the result they qualify.
+            val withNotices = drainPoolNotices()?.let { withRebuild.copy(text = it + withRebuild.text) } ?: withRebuild
+            stampTabId(withNotices.copy(pageURL = tab.manager.currentURL.value), tab.id)
         } finally {
             tab.lastActivityDate = Date()
             if (implicitTab) {
@@ -1230,6 +1286,14 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             val pointingOwners = lastTabByOwner.filterValues { it == dead.id }.keys.toList()
             val cause = if (dead.manager.isRendererDead) "crashed (its renderer process died)"
                 else "stopped responding"
+            // [T-android-net-trail-carryover-2026-10] C-10: keep the dead tab's
+            // native trail for the rest of the session before the WebView goes.
+            runCatching { dead.manager.readNetworkLog(null, 30) }.getOrDefault(emptyList()).let { trail ->
+                if (trail.isNotEmpty()) {
+                    crossTabTrail.addAll(trail)
+                    while (crossTabTrail.size > 120) crossTabTrail.removeFirst()
+                }
+            }
             releaseTabResources(dead)
             tabOwner.remove(dead.id)
             lastTabByOwner.entries.removeAll { it.value == dead.id }
@@ -1249,7 +1313,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                 "[Tab rebuilt] Browser tab ${dead.id} $cause and was rebuilt as tab ${fresh.id}" +
                     (url?.let { "; page reloaded from $it" } ?: "; it had no page to reload") +
                     ". Earlier element references and page state are gone — re-locate " +
-                    "elements before interacting, and use tab_id ${fresh.id} from now on."
+                    "elements before interacting, and use tab_id ${fresh.id} from now on." +
+                    " If a form was in progress (blog / issue editor…), the site's localStorage draft " +
+                    "may still exist — reopen the original URL in the rebuilt tab and check before re-typing."
             Log.i(TAG, "acquireTab: rebuilt tab ${dead.id} as ${fresh.id} (url=${url ?: "none"})")
         }
         if (survivors.isNotEmpty() && survivors.none { it.id == _selectedTabId.value }) {
@@ -1717,6 +1783,10 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             if (url.isNotEmpty()) savedURLs[tab.id] = url
             currentTabs.remove(tab)
             releaseTabResources(tab)
+            postPoolNotice(
+                "Note: idle tab ${tab.id} (${url.take(60)}) was auto-closed after the idle timeout — " +
+                    "list_tabs shows what's left.",
+            )
             Log.i(TAG, "Evicted idle tab ${tab.id}")
         }
         if (toRemove.isNotEmpty()) {
@@ -1818,6 +1888,10 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         _tabs.value = currentTabs
         releaseTabResources(tab)
         forgetTab(id, currentTabs)
+        postPoolNotice(
+            "Note: tab $id (${url.take(60)}) was closed to free room for another chat's tab — " +
+                "list_tabs shows what's left.",
+        )
         saveState()
         Log.i(TAG, "Evicted tab $id at registry request (url=${url.take(60)})")
     }
@@ -1847,6 +1921,10 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             if (url.isNotEmpty()) savedURLs[tab.id] = url
             currentTabs.remove(tab)
             releaseTabResources(tab)
+            postPoolNotice(
+                "Note: tab ${tab.id} (${url.take(60)}) was closed under memory pressure — " +
+                    "list_tabs shows what's left.",
+            )
             tabOwner.remove(tab.id)
             lastTabByOwner.entries.removeAll { it.value == tab.id }
         }
@@ -2027,6 +2105,27 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             }
         }
         return if (hint.isBlank()) "" else "— " + hint.take(48)
+    }
+
+    /**
+     * [T-android-macro-journal-2026-10] C-9: turn the last [amount] journaled
+     * actions into a macro. No record_start needed — the journal rides along
+     * automatically, so a whole day's flow can be exported after the fact.
+     */
+    private suspend fun exportMacro(input: BrowserActionInput): BrowserActionResult {
+        ensureMacrosLoaded()
+        val name = input.text?.trim()?.takeIf { it.isNotBlank() } ?: "exported"
+        val take = (input.amount ?: 300).coerceIn(1, 400)
+        val steps = actionJournal.takeLast(take).map { JSONObject(it.toString()) }
+        if (steps.isEmpty()) {
+            return BrowserActionResult(text = "export_macro: the session journal is empty — do some actions first.", success = false)
+        }
+        macros[name] = SavedMacro(name, steps.toMutableList(), System.currentTimeMillis())
+        saveMacros()
+        return BrowserActionResult(
+            text = "Exported ${steps.size} action(s) from this session's journal into macro \"$name\". " +
+                "Replay any time with run_macro (text=\"$name\"), or list_macros to see it alongside the others.",
+        )
     }
 
     private suspend fun listMacros(): BrowserActionResult {

@@ -90,7 +90,7 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
 
         val input = BrowserActionInput.parse(inputJson.toString())
             ?: return emitError(action = "execute", code = ERR_INVALID_ARGS,
-                message = "Invalid browser_use input. Required: 'action' (one of ${BrowserAction.allValues.joinToString(", ")})",
+                message = "Invalid browser_use input — " + BrowserActionInput.diagnose(inputJson.toString()),
                 compact = compact, quiet = quiet, exit = 2)
 
         val actionName = input.action.value
@@ -441,6 +441,7 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
             "run_macro"          -> "browser: run macro"
             "list_macros"        -> "browser: list macros"
             "keep_alive"         -> "browser: keep-alive"
+            "export_macro"       -> "browser: export macro"
             "find"               -> "browser: find ${txt ?: sel ?: ""}".trim()
             else                 -> "browser: $action"
         }

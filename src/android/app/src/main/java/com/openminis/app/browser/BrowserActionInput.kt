@@ -151,6 +151,41 @@ data class BrowserActionInput(
         return o
     }
     companion object {
+        /**
+         * [T-android-invalid-input-2026-10] B-5: explain WHY [parse] returned
+         * null — invalid JSON vs missing / unknown action — instead of the old
+         * bare "Invalid browser_use input", which left blind re-tries as the
+         * only move when a quoting glitch was involved.
+         */
+        fun diagnose(raw: String?): String {
+            if (raw.isNullOrBlank()) {
+                return "input is empty. Send a JSON object like {\"action\":\"navigate\",\"url\":\"https://…\"}"
+            }
+            val obj = try {
+                JSONObject(raw)
+            } catch (t: Throwable) {
+                val msg = t.message?.take(120) ?: t.javaClass.simpleName
+                return "input is not valid JSON ($msg). Check quoting/escaping; first 80 chars: " +
+                    raw.take(80)
+            }
+            val action = obj.optString("action").trim()
+            if (action.isEmpty()) {
+                return "missing 'action'. Valid actions: " + BrowserAction.allValues.joinToString(", ")
+            }
+            if (BrowserAction.fromString(action) == null) {
+                return "unknown action '$action'. Valid actions: " + BrowserAction.allValues.joinToString(", ")
+            }
+            val keys = try {
+                val it = obj.keys()
+                val out = mutableListOf<String>()
+                while (it.hasNext()) out.add(it.next())
+                out.joinToString(", ")
+            } catch (_: Throwable) {
+                "?"
+            }
+            return "could not parse this input for action '$action' — keys: $keys"
+        }
+
         fun parse(json: String): BrowserActionInput? {
             return try {
                 val obj = JSONObject(json)

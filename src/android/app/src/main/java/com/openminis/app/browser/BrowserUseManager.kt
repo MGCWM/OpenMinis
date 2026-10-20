@@ -1060,7 +1060,7 @@ class BrowserUseManager(
         // diff-tracked action so the result can report what actually changed.
         val beforeFingerprint = if (input.action in PAGE_DIFF_ACTIONS) capturePageFingerprint() else null
         var result: BrowserActionResult = when (input.action) {
-            BrowserAction.NAVIGATE -> navigate(input.url)
+            BrowserAction.NAVIGATE -> navigate(input.url, input.selector, input.timeoutMs)
             BrowserAction.SCREENSHOT -> return screenshot(
                 fullPage = input.fullPage,
                 elementSelector = input.selector,
@@ -1133,7 +1133,7 @@ class BrowserUseManager(
             BrowserAction.RESTORE_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
             BrowserAction.RECORD_START, BrowserAction.RECORD_STOP, BrowserAction.RUN_MACRO,
-            BrowserAction.LIST_MACROS, BrowserAction.KEEP_ALIVE ->
+            BrowserAction.LIST_MACROS, BrowserAction.KEEP_ALIVE, BrowserAction.EXPORT_MACRO ->
                 return BrowserActionResult.error("Macro + keep-alive actions must be routed through BrowserTabPool")
         }
 
@@ -1343,7 +1343,7 @@ class BrowserUseManager(
 
     // -- Navigate --
 
-    private suspend fun navigate(urlString: String?): BrowserActionResult {
+    private suspend fun navigate(urlString: String?, waitSelector: String?, waitTimeoutMs: Int?): BrowserActionResult {
         if (urlString.isNullOrEmpty()) return BrowserActionResult.error("Missing 'url' parameter")
 
         var normalized = urlString
@@ -1385,7 +1385,42 @@ class BrowserUseManager(
         _isLoading.value = false
 
         val meta = navigationMetadata()
+        // [T-android-navigate-wait-2026-10] B-6: optional post-load settle.
+        // `selector` names an element that proves the RIGHT page is up; when it
+        // doesn't appear we re-navigate once (GitCode /issues/new bounced back
+        // to the list page) and check again. The load itself still counts as a
+        // successful navigation — the note explains what actually happened.
+        if (!waitSelector.isNullOrBlank()) {
+            val waitSec = (waitTimeoutMs?.takeIf { it > 0 } ?: 8).coerceAtMost(30)
+            val waitMs = waitSec * 1000L
+            if (awaitSelector(waitSelector, waitMs)) {
+                return BrowserActionResult(text = meta + "\n[wait_for_selector] '$waitSelector' present — the right page is up.")
+            }
+            withContext(Dispatchers.Main) { runCatching { webView.reload() } }
+            withTimeoutOrNull(waitMs) { while (_isLoading.value) kotlinx.coroutines.delay(100) }
+            kotlinx.coroutines.delay(300)
+            val okSecond = awaitSelector(waitSelector, waitMs)
+            return BrowserActionResult(
+                text = meta + "\n[wait_for_selector] '$waitSelector' " + if (okSecond) {
+                    "was missing on the first load; re-navigated once and it appeared — the page looks correct now."
+                } else {
+                    "still missing after one automatic re-navigation — the page may have landed somewhere unexpected; check the URL before continuing."
+                },
+            )
+        }
         return BrowserActionResult(text = meta)
+    }
+
+    /** [T-android-navigate-wait-2026-10] Poll for a selector via the shared probe. */
+    private suspend fun awaitSelector(selector: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val raw = runCatching { evaluateJavascript(BrowserUseJS.waitProbe(selector, null)) }.getOrNull()
+            val obj = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
+            if (obj?.optBoolean("ok") == true) return true
+            kotlinx.coroutines.delay(300)
+        }
+        return false
     }
 
     private suspend fun navigationMetadata(): String {

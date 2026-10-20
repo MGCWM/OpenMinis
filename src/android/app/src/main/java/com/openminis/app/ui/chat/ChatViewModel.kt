@@ -14400,7 +14400,10 @@ class ChatViewModel(
 
     private suspend fun executeBrowserUseTool(argsJson: String): ToolExecutionResult {
         val input = BrowserActionInput.parse(argsJson)
-            ?: return ToolExecutionResult("Error: Invalid browser_use input", false)
+            ?: return ToolExecutionResult(
+                "Error: Invalid browser_use input — " + com.openminis.app.browser.BrowserActionInput.diagnose(argsJson),
+                false,
+            )
 
         return try {
             val result = browserTabPool.execute(input, owner = browserOwnerId)
@@ -15399,7 +15402,10 @@ Scheduled tasks: crontab / at / nohup loops will stop when the app is suspended,
 
     suspend fun executeBrowserUse(argsJson: String): BrowserToolResult {
         val input = BrowserActionInput.parse(argsJson)
-            ?: return BrowserToolResult(text = "Error: Invalid browser_use input. Required: 'action' parameter.", success = false)
+            ?: return BrowserToolResult(
+                text = "Error: Invalid browser_use input — " + com.openminis.app.browser.BrowserActionInput.diagnose(argsJson),
+                success = false,
+            )
 
         return try {
             val result = browserTabPool.execute(input, owner = browserOwnerId)

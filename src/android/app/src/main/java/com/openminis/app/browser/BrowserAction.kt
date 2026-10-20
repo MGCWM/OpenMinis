@@ -63,7 +63,10 @@ enum class BrowserAction(val value: String) {
     RECORD_STOP("record_stop"),
     RUN_MACRO("run_macro"),
     LIST_MACROS("list_macros"),
-    KEEP_ALIVE("keep_alive");
+    KEEP_ALIVE("keep_alive"),
+    // [T-android-macro-journal-2026-10] C-9: export the session's whole action
+    // journal as a replayable macro (no recording needed).
+    EXPORT_MACRO("export_macro");
 
     /**
      * [T-browser-readaction-follow-tab-and-yolo-android] True when this action
