@@ -2340,36 +2340,46 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // 403 {"not login"}), so reachability alone can't tell the session
         // died. Evaluate a secondary URL against an expected status code or a
         // required body substring.
+        //
+        // [T-android-keepalive-probe-v2-2026-10] Two field traps, absorbed here
+        // instead of left to the user:
+        //  * the cookie SNAPSHOT is per-host, so a probe on another domain
+        //    must carry ITS OWN cookies — and when that jar is empty the probe
+        //    would always read DEAD, so we refuse to arm it;
+        //  * a logged-in endpoint can still 403 on a missing CSRF header
+        //    (Huawei get-notifications), so 403 alone is not proof of a dead
+        //    session — `bodycontains:<marker>` (e.g. userId) tells the two
+        //    apart.
         val probeUrl = input.probeUrl?.trim()?.takeIf { it.isNotBlank() }
-        val probeExpect = input.probeExpect?.trim()?.takeIf { it.isNotBlank() }
+        val probeRule = parseProbeRule(input.probeExpect)
+        val probeHost = probeUrl?.let { runCatching { java.net.URI(it).host }.getOrNull() }
+        val targetHost = runCatching { java.net.URI(target).host }.getOrNull()
+        val crossDomainProbe = probeUrl != null && probeHost != null && targetHost != null &&
+            !probeHost.equals(targetHost, ignoreCase = true)
+        val probeCookie = if (probeUrl != null) withContext(Dispatchers.Main) {
+            runCatching { android.webkit.CookieManager.getInstance().getCookie(probeUrl) }.getOrNull()
+        } else null
+        val probeUsable = probeUrl != null && !(crossDomainProbe && probeCookie.isNullOrBlank())
         var probeLine: String? = null
         if (probeUrl != null) {
-            val probeCookie = withContext(Dispatchers.Main) {
-                runCatching { android.webkit.CookieManager.getInstance().getCookie(probeUrl) }.getOrNull()
+            val domainNote = when {
+                !crossDomainProbe -> ""
+                probeCookie.isNullOrBlank() ->
+                    "\n  Warning: probe host ($probeHost) has NO cookies in the jar while the session lives on " +
+                        "$targetHost — this probe would read DEAD even on a live session. Put probe_url on the same domain as url."
+                else ->
+                    "\n  Note: probe host ($probeHost) differs from the session host ($targetHost); it runs with its own cookie jar."
             }
-            val expectIsStatus = probeExpect != null && probeExpect.length == 3 && probeExpect.all { it.isDigit() }
-            val res = withContext(Dispatchers.IO) {
-                kxHttpGet(probeUrl, ua, probeCookie, wantBody = probeExpect != null && !expectIsStatus)
-            }
-            probeLine = if (res == null) {
-                "  Login probe: request failed (network error) on $probeUrl"
+            probeLine = if (!probeUsable) {
+                "  Login probe: NOT ARMED — cross-domain probe with an empty cookie jar always reads DEAD. " +
+                    "Put probe_url on the same domain as url."
             } else {
-                val code = res.first
-                val body = res.second
-                val ok = when {
-                    probeExpect == null -> code in 200..399
-                    expectIsStatus -> code.toString() == probeExpect
-                    else -> body.contains(probeExpect!!, ignoreCase = true)
+                val base = runProbe(probeUrl!!, probeRule, probeCookie, ua)
+                base + if (probeCookie.isNullOrBlank() && !crossDomainProbe) {
+                    "\n  Warning: the jar has no cookies for this probe URL — an anonymous probe can read DEAD/403 on a live session."
+                } else {
+                    domainNote
                 }
-                "  Login probe: HTTP $code on $probeUrl" +
-                    (if (probeExpect == null) {
-                        ""
-                    } else if (expectIsStatus) {
-                        " (expected $probeExpect)"
-                    } else {
-                        " (expected body to contain \"${probeExpect!!.take(40)}\")"
-                    }) +
-                    if (ok) " — session looks ALIVE" else " — SESSION LOOKS DEAD, log in again"
             }
         }
         val sb = StringBuilder()
@@ -2385,16 +2395,23 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         }
         probeLine?.let { sb.appendLine(it) }
         val pairs = parseCookiePairs(cookie)
+        val probePairs = if (crossDomainProbe && !probeCookie.isNullOrBlank()) parseCookiePairs(probeCookie) else null
         val envPath = try {
-            writeCookieEnvFile(target, pairs)
+            writeCookieEnvFile(target, pairs, probePairs)
         } catch (_: Throwable) {
             null
         }
         if (envPath != null && pairs.isNotEmpty()) {
             val host = runCatching { java.net.URI(target).host }.getOrNull() ?: "site"
             sb.appendLine("  ${pairs.size} cookie(s) exported → $envPath")
-            val shell = buildKeepAliveShell(envPath, target, probeUrl, probeExpect)
-            val watchTarget = if (probeUrl != null) "login probe ($probeUrl)" else target
+            val shell = buildKeepAliveShell(envPath, target, if (probeUsable) probeUrl else null, probeRule, crossDomainProbe)
+            val watchTarget = if (probeUsable) "login probe ($probeUrl)" else target
+            if (probeUrl != null && !probeUsable) {
+                sb.appendLine(
+                    "  Warning: the probe was dropped from the watch — a cross-domain probe with no cookies " +
+                        "would always read DEAD. Arm again with probe_url on the same domain.",
+                )
+            }
             sb.appendLine(
                 "  Arm the watch (every ${intervalMin}m × $fires; watches $watchTarget). " +
                     "A SESSION-DEAD line means the login expired — re-login, then re-run keep_alive to refresh:",
@@ -2472,6 +2489,56 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         }
     }
 
+    /** [T-android-keepalive-probe-v2-2026-10] Parsed probe expectation. */
+    private sealed class ProbeRule {
+        data class Status(val code: Int) : ProbeRule()
+        data class BodyContains(val text: String) : ProbeRule()
+    }
+
+    /**
+     * Accepts `"200"` (status equality), `bodycontains:<text>` (body marker;
+     * also `body:` / `body_contains:`), or a bare substring (treated as a body
+     * marker for backwards compatibility).
+     */
+    private fun parseProbeRule(spec: String?): ProbeRule? {
+        val s = spec?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val lower = s.lowercase()
+        for (p in listOf("bodycontains:", "body_contains:", "body:")) {
+            if (lower.startsWith(p)) {
+                return s.substring(p.length).trim().takeIf { it.isNotEmpty() }?.let { ProbeRule.BodyContains(it) }
+            }
+        }
+        return if (s.length == 3 && s.all { it.isDigit() }) ProbeRule.Status(s.toInt()) else ProbeRule.BodyContains(s)
+    }
+
+    private fun probeRuleMatches(rule: ProbeRule?, code: Int, body: String): Boolean = when (rule) {
+        null -> code in 200..399
+        is ProbeRule.Status -> code == rule.code
+        is ProbeRule.BodyContains -> body.contains(rule.text, ignoreCase = true)
+    }
+
+    /** One probe request + verdict line. */
+    private suspend fun runProbe(url: String, rule: ProbeRule?, cookie: String?, ua: String?): String {
+        val res = withContext(Dispatchers.IO) { kxHttpGet(url, ua, cookie, wantBody = rule is ProbeRule.BodyContains) }
+            ?: return "  Login probe: request failed (network error) on $url"
+        val code = res.first
+        val body = res.second
+        val ruleText = when (rule) {
+            null -> "2xx–3xx"
+            is ProbeRule.Status -> "status ${rule.code}"
+            is ProbeRule.BodyContains -> "body contains \"${rule.text.take(40)}\""
+        }
+        val verdict = when {
+            probeRuleMatches(rule, code, body) -> " — session looks ALIVE"
+            code in 300..399 ->
+                " — redirect (typically to a login page): the session or the cookie domain doesn't line up"
+            code == 403 && rule is ProbeRule.BodyContains ->
+                " — 403 without the expected marker: can be a missing CSRF/header rather than an expired session"
+            else -> " — SESSION LOOKS DEAD, log in again"
+        }
+        return "  Login probe: HTTP $code on $url (expects $ruleText)$verdict"
+    }
+
     /**
      * [T-android-keepalive-probe-2026-10] Shell body for the armed watch —
      * prints "keep-alive OK" / "SESSION-DEAD …" so the fired turn can alert on
@@ -2481,22 +2548,23 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         envPath: String,
         watchUrl: String,
         probeUrl: String?,
-        probeExpect: String?,
+        probeRule: ProbeRule?,
+        probeUsesOwnCookie: Boolean,
     ): String {
         if (probeUrl == null) {
             return ". $envPath && curl -s -o /dev/null -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $watchUrl"
         }
         val tmp = "/tmp/ka-probe-\$\$"
-        val expectIsStatus = probeExpect != null && probeExpect.length == 3 && probeExpect.all { it.isDigit() }
-        val fetch = ". $envPath && code=\$(curl -s -o $tmp -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $probeUrl)"
-        return when {
-            expectIsStatus ->
-                "$fetch; if [ \"\$code\" = \"$probeExpect\" ]; then echo \"keep-alive OK (http=\$code)\"; " +
-                    "else echo \"SESSION-DEAD (http=\$code) — 会话已失效，需重新登录\"; fi"
-            !probeExpect.isNullOrBlank() ->
-                "$fetch; if grep -qF -- '$probeExpect' $tmp 2>/dev/null; then echo \"keep-alive OK (http=\$code)\"; " +
-                    "else echo \"SESSION-DEAD (http=\$code, keyword missing) — 会话已失效，需重新登录\"; fi"
-            else ->
+        val cookieVar = if (probeUsesOwnCookie) "MINIS_COOKIE_PROBE" else "MINIS_COOKIE_HEADER"
+        val fetch = ". $envPath && code=\$(curl -s -o $tmp -w \"%{http_code}\" -H \"Cookie: \$$cookieVar\" $probeUrl)"
+        return when (probeRule) {
+            is ProbeRule.Status ->
+                "$fetch; if [ \"\$code\" = \"${probeRule.code}\" ]; then echo \"keep-alive OK (http=\$code)\"; " +
+                    "else echo \"SESSION-DEAD (http=\$code) — 会话已失效或被重定向，需重新登录\"; fi"
+            is ProbeRule.BodyContains ->
+                "$fetch; if grep -qF -- " + poolShQuote(probeRule.text) + " $tmp 2>/dev/null; then echo \"keep-alive OK (http=\$code)\"; " +
+                    "else echo \"SESSION-DEAD (http=\$code, marker missing) — 会话已失效（若怀疑是 403 csrf，请换同域接口或带登录标记）\"; fi"
+            null ->
                 "$fetch; if [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then echo \"keep-alive OK (http=\$code)\"; " +
                     "else echo \"SESSION-DEAD (http=\$code) — 会话已失效，需重新登录\"; fi"
         }
@@ -2513,7 +2581,11 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         return if (cleaned.isEmpty() || cleaned[0].isDigit()) "_$cleaned" else cleaned
     }
 
-    private fun writeCookieEnvFile(url: String, pairs: List<Pair<String, String>>): String? {
+    private fun writeCookieEnvFile(
+        url: String,
+        pairs: List<Pair<String, String>>,
+        probePairs: List<Pair<String, String>>? = null,
+    ): String? {
         val sid = sessionId?.takeIf { it.isNotBlank() } ?: return null
         return try {
             val dir = com.openminis.app.sandbox.SessionMounts.sessionDir(context.filesDir, sid, "offloads")
@@ -2527,6 +2599,12 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                 .append(poolShQuote(pairs.joinToString("; ") { (n, v) -> "$n=$v" })).append('\n')
             for ((n, v) in pairs) {
                 sb.append("export MINIS_COOKIE_").append(poolEnvName(n)).append('=').append(poolShQuote(v)).append('\n')
+            }
+            // [T-android-keepalive-probe-v2-2026-10] Cross-domain probes carry
+            // their OWN jar; the armed watch uses this variable for them.
+            if (!probePairs.isNullOrEmpty()) {
+                sb.append("export MINIS_COOKIE_PROBE=")
+                    .append(poolShQuote(probePairs.joinToString("; ") { (n, v) -> "$n=$v" })).append('\n')
             }
             file.writeText(sb.toString())
             try {
