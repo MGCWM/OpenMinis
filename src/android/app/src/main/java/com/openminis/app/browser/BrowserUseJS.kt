@@ -340,6 +340,35 @@ object BrowserUseJS {
             var best = pickBest(hits);
             return best ? [best].concat(hits) : [];
           }
+          function matchPlaceholder(sel) {
+            var lower = sel.toLowerCase();
+            var raw = null;
+            if (lower.indexOf('placeholder*=') === 0) raw = sel.substring(13);
+            else if (lower.indexOf('placeholder=') === 0) raw = sel.substring(12);
+            else return null;
+            var m = raw.trim();
+            var exact = false;
+            if (m.length > 1 && ((m.charAt(0) === '"' && m.charAt(m.length - 1) === '"') ||
+                                 (m.charAt(0) === "'" && m.charAt(m.length - 1) === "'"))) {
+              m = m.slice(1, -1); exact = true;
+            }
+            var want = m.trim().toLowerCase();
+            if (!want) return [];
+            var els = scanAll();
+            var exactHits = []; var looseHits = [];
+            for (var i = 0; i < els.length; i++) {
+              var el = els[i];
+              var ph = '';
+              try { ph = String(el.getAttribute('placeholder') || el.getAttribute('aria-placeholder') || '').toLowerCase(); } catch (e) {}
+              if (!ph) continue;
+              if (ph === want) { exactHits.push(el); continue; }
+              if (!exact && ph.indexOf(want) >= 0) looseHits.push(el);
+            }
+            var best = pickBest(exactHits);
+            if (best) return [best].concat(exactHits, looseHits);
+            best = pickBest(looseHits);
+            return best ? [best].concat(looseHits) : [];
+          }
           function limitOnly(arr, limit) { return arr.slice(0, limit || arr.length); }
           function resolveAll(sel, limit) {
             var s = String(sel == null ? '' : sel).trim();
@@ -348,6 +377,8 @@ object BrowserUseJS {
             pref = matchAria(s);
             if (pref !== null) return limitOnly(pref, limit);
             pref = matchRole(s);
+            if (pref !== null) return limitOnly(pref, limit);
+            pref = matchPlaceholder(s);
             if (pref !== null) return limitOnly(pref, limit);
             return cssFindAll(s).slice(0, limit);
           }
@@ -358,12 +389,45 @@ object BrowserUseJS {
             try {
               var s = String(sel == null ? '' : sel).trim();
               var sl = s.toLowerCase();
-              if (sl.indexOf('text=') === 0 || sl.indexOf('aria-label=') === 0 || sl.indexOf('role=') === 0) {
+              if (sl.indexOf('text=') === 0 || sl.indexOf('aria-label=') === 0 || sl.indexOf('role=') === 0 ||
+                  sl.indexOf('placeholder=') === 0 || sl.indexOf('placeholder*=') === 0) {
                 var arr = resolveAll(s, 1);
                 return arr.length ? arr[0] : null;
               }
               return cssFind(s) || null;
             } catch (e) { return null; }
+          };
+          window.__MQhint = function(sel) {
+            try {
+              var s = String(sel == null ? '' : sel).trim();
+              var lower = s.toLowerCase();
+              if (lower.indexOf('placeholder*=') === 0) s = s.substring(13);
+              else if (lower.indexOf('placeholder=') === 0) s = s.substring(12);
+              else if (lower.indexOf('text=') === 0) s = s.substring(5);
+              else if (lower.indexOf('aria-label=') === 0) s = s.substring(11);
+              s = stripQuotes(s).trim();
+              if (s.length < 2) return '';
+              var needle = s.toLowerCase();
+              var hits = [];
+              var els = document.querySelectorAll('input,textarea,button,a,[role="button"],[contenteditable="true"]');
+              for (var i = 0; i < els.length && hits.length < 3; i++) {
+                var el = els[i];
+                var ph = '';
+                try { ph = String(el.getAttribute('placeholder') || el.getAttribute('aria-placeholder') || ''); } catch (e) {}
+                var al = '';
+                try { al = String(el.getAttribute('aria-label') || ''); } catch (e) {}
+                var tx = String(el.innerText || el.value || '').trim();
+                var pl = ph.toLowerCase(); var all = al.toLowerCase(); var tl = tx.toLowerCase();
+                if (pl && pl !== needle && (pl.indexOf(needle) >= 0 || needle.indexOf(pl) >= 0)) {
+                  hits.push('placeholder*=' + ph);
+                } else if (all && all !== needle && (all.indexOf(needle) >= 0 || needle.indexOf(all) >= 0)) {
+                  hits.push('aria-label=' + al);
+                } else if (tl && tl.length <= 24 && tl !== needle && (tl.indexOf(needle) >= 0 || needle.indexOf(tl) >= 0)) {
+                  hits.push('text=' + tx.slice(0, 20));
+                }
+              }
+              return hits.length ? ' — did you mean: ' + hits.join(' | ') : '';
+            } catch (e) { return ''; }
           };
         })();
     """.trimIndent()
@@ -541,7 +605,7 @@ object BrowserUseJS {
         (function() {
             var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
             var el = __f('${jsQuote(selector)}');
-            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)} - searched CSS / text= / aria-label= / role= (incl. Shadow DOM + same-origin iframes)'});
+            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)} - searched CSS / text= / aria-label= / role= / placeholder*= (incl. Shadow DOM + same-origin iframes)' + (window.__MQhint ? window.__MQhint(${JSONObject.quote(selector)}) : '')});
             if (el.disabled) return JSON.stringify({error: 'Element is disabled', tag: el.tagName});
             // [T-android-blank-link-2026-10] A target=_blank link from a
             // scripted click would be silently swallowed by the popup blocker
@@ -599,7 +663,7 @@ object BrowserUseJS {
         (function() {
             var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
             var el = __f('${jsQuote(selector)}');
-            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
+            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}' + (window.__MQhint ? window.__MQhint(${JSONObject.quote(selector)}) : '')});
             el.focus();
             if (el.isContentEditable) {
                 // [T-android-rich-editor-type-2026-10] Rich editors (CodeMirror 6,
@@ -686,7 +750,7 @@ object BrowserUseJS {
                 (function() {
                     var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
                     var el = __f('$sel');
-                    if (!el) return JSON.stringify({error: 'Element not found: $sel'});
+                    if (!el) return JSON.stringify({error: 'Element not found: $sel' + (window.__MQhint ? window.__MQhint(${JSONObject.quote(sel)}) : '')});
                     var innerTextVal = el.innerText || '';
                     var textContentVal = el.textContent || '';
                     // [T-android-gettext-form-values-2026-10] Form controls
@@ -758,7 +822,7 @@ object BrowserUseJS {
                 var scrolledElement = 'window';
                 if (targetSelector) {
                     target = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } })(targetSelector);
-                    if (!target) return JSON.stringify({error: 'Element not found: ' + targetSelector});
+                    if (!target) return JSON.stringify({error: 'Element not found: ' + targetSelector + (window.__MQhint ? window.__MQhint(targetSelector) : '')});
                 } else {
                     var beforeY = window.scrollY;
                     window.scrollBy(0, $pixels);
@@ -804,7 +868,7 @@ object BrowserUseJS {
         (function() {
             var __f = (window.__MQF || function(s){ try { return document.querySelector(s); } catch(e) { return null; } });
             var el = __f('${jsQuote(selector)}');
-            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}'});
+            if (!el) return JSON.stringify({error: 'Element not found: ${jsQuote(selector)}' + (window.__MQhint ? window.__MQhint(${JSONObject.quote(selector)}) : '')});
             el.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
             el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
             return JSON.stringify({hovered: true, tag: el.tagName, text: (el.innerText || '').substring(0, 100)});

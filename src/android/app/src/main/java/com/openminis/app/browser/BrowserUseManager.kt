@@ -2607,9 +2607,53 @@ class BrowserUseManager(
     // -- Type --
 
     private suspend fun type(selector: String?, text: String?): BrowserActionResult {
-        if (selector == null) return BrowserActionResult.error("type requires 'selector'")
         if (text == null) return BrowserActionResult.error("type requires 'text'")
+        // [T-android-focus-typing-2026-10] No selector = type into whatever the
+        // WebView has focused, via REAL key events. That is the only route into
+        // an input inside a CROSS-ORIGIN iframe (page JS cannot reach it by
+        // design); pair it with a coordinate tap to focus the field first.
+        if (selector.isNullOrBlank()) return typeIntoFocusedElement(text)
         return evaluateAndReturn(BrowserUseJS.type(selector, text))
+    }
+
+    /**
+     * [T-android-focus-typing-2026-10] Dispatch [text] as native key events
+     * (KeyCharacterMap-based, so the focused frame sees real input — including
+     * a cross-origin iframe, which JavaScript injection can never reach).
+     * ASCII only: characters without a key mapping are reported, never
+     * silently dropped.
+     */
+    private suspend fun typeIntoFocusedElement(text: String): BrowserActionResult {
+        if (text.isEmpty()) return BrowserActionResult.error("type requires 'text'")
+        if (text.length > 2000) {
+            return BrowserActionResult.error(
+                "typing without a selector is capped at 2000 chars per call — split longer text into multiple calls",
+            )
+        }
+        val events = try {
+            android.view.KeyCharacterMap.load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD)
+                .getEvents(text.toCharArray())
+        } catch (t: Throwable) {
+            null
+        }
+        if (events.isNullOrEmpty()) {
+            return BrowserActionResult.error(
+                "This text has no key mapping (non-ASCII), so it can't be typed into a cross-origin frame. " +
+                    "ASCII works here; for CJK, use a selector on a normal page.",
+            )
+        }
+        withContext(Dispatchers.Main) {
+            val now = android.os.SystemClock.uptimeMillis()
+            for (ev in events) {
+                webView.dispatchKeyEvent(
+                    android.view.KeyEvent(now, now, ev.action, ev.keyCode, 0, ev.metaState),
+                )
+            }
+        }
+        return BrowserActionResult(
+            text = "Typed ${text.length} char(s) into the focused element via native key events " +
+                "(the route that works inside cross-origin iframes).",
+        )
     }
 
     // -- Get Text --

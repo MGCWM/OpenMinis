@@ -85,6 +85,17 @@ data class BrowserActionInput(
     val offset: Int? = null,
     /** get_network_log / get_response_log: page size. */
     val limit: Int? = null,
+    /**
+     * [T-android-keepalive-probe-2026-10] keep_alive: a secondary URL whose
+     * response tells whether the login session is still valid (a page can
+     * answer 200 while logged out).
+     */
+    val probeUrl: String? = null,
+    /**
+     * keep_alive probe expectation: a 3-digit status ("200"), or a substring
+     * that must appear in the probe body.
+     */
+    val probeExpect: String? = null,
 ) {
 
     /**
@@ -189,6 +200,8 @@ data class BrowserActionInput(
                     full = if (obj.has("full")) obj.optBoolean("full") else null,
                     offset = if (obj.has("offset")) obj.optInt("offset") else null,
                     limit = if (obj.has("limit")) obj.optInt("limit") else null,
+                    probeUrl = obj.optString("probe_url").ifEmpty { null },
+                    probeExpect = obj.optString("probe_expect").ifEmpty { null },
                 )
             } catch (_: Exception) {
                 null

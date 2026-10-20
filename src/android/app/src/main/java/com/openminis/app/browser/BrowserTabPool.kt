@@ -903,6 +903,20 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
     }
 
     /**
+     * [T-android-timeout-net-receipt-2026-10] On a timeout/wedge the page-side
+     * request ring is unreachable (the renderer is what died), but the NATIVE
+     * trail recorded in shouldInterceptRequest survives. Attach its tail so
+     * the model can see whether the action's POST actually went out — the
+     * "did it submit before it crashed?" question that decides retry vs stop.
+     */
+    private fun networkTrailAppendix(tab: Tab): String {
+        val trail = runCatching { tab.manager.readNetworkLog(null, 12) }.getOrDefault(emptyList())
+        if (trail.isEmpty()) return ""
+        return "\nNetwork requests fired during the action (native trail, oldest first):\n" +
+            trail.joinToString("\n") { "  $it" }
+    }
+
+    /**
      * Acquire a tab (creating / selecting per [acquireTab]) and run the action.
      * Shared by the serialized (explicit existing tab id) and unlocked (tab-less
      * / new-tab) execution paths. [T-browser-use-per-tab-serial-android]
@@ -950,14 +964,14 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                         "Browser action '${input.action.value}' timed out on tab ${tab.id} after " +
                             "${BrowserActionGuard.ACTION_DEAD_TIMEOUT_MS / 1000}s — the page stopped " +
                             "responding. The tab has been reset and will be rebuilt on your next " +
-                            "browser call; retry the action.",
+                            "browser call; retry the action." + networkTrailAppendix(tab),
                     ),
                 )
                 is BrowserActionGuard.Outcome.Wedged -> return BrowserActionResult.error(
                     withRebuildNote(
                         rebuildNote,
                         "Browser tab ${tab.id} is not usable: ${outcome.message}. It will be " +
-                            "rebuilt on your next browser call; retry the action.",
+                            "rebuilt on your next browser call; retry the action." + networkTrailAppendix(tab),
                     ),
                 )
             }
@@ -2222,6 +2236,43 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                 null
             }
         }
+        // [T-android-keepalive-probe-2026-10] Optional LOGIN probe. A page can
+        // answer 200 while logged out (Huawei: dashboard 200, notifications
+        // 403 {"not login"}), so reachability alone can't tell the session
+        // died. Evaluate a secondary URL against an expected status code or a
+        // required body substring.
+        val probeUrl = input.probeUrl?.trim()?.takeIf { it.isNotBlank() }
+        val probeExpect = input.probeExpect?.trim()?.takeIf { it.isNotBlank() }
+        var probeLine: String? = null
+        if (probeUrl != null) {
+            val probeCookie = withContext(Dispatchers.Main) {
+                runCatching { android.webkit.CookieManager.getInstance().getCookie(probeUrl) }.getOrNull()
+            }
+            val expectIsStatus = probeExpect != null && probeExpect.length == 3 && probeExpect.all { it.isDigit() }
+            val res = withContext(Dispatchers.IO) {
+                kxHttpGet(probeUrl, ua, probeCookie, wantBody = probeExpect != null && !expectIsStatus)
+            }
+            probeLine = if (res == null) {
+                "  Login probe: request failed (network error) on $probeUrl"
+            } else {
+                val code = res.first
+                val body = res.second
+                val ok = when {
+                    probeExpect == null -> code in 200..399
+                    expectIsStatus -> code.toString() == probeExpect
+                    else -> body.contains(probeExpect!!, ignoreCase = true)
+                }
+                "  Login probe: HTTP $code on $probeUrl" +
+                    (if (probeExpect == null) {
+                        ""
+                    } else if (expectIsStatus) {
+                        " (expected $probeExpect)"
+                    } else {
+                        " (expected body to contain \"${probeExpect!!.take(40)}\")"
+                    }) +
+                    if (ok) " — session looks ALIVE" else " — SESSION LOOKS DEAD, log in again"
+            }
+        }
         val sb = StringBuilder()
         sb.appendLine("keep_alive — $target")
         if (ping == null) {
@@ -2233,6 +2284,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
                 sb.appendLine("  Warning: looks like a redirect towards a login — the session may be (or soon be) expired.")
             }
         }
+        probeLine?.let { sb.appendLine(it) }
         val pairs = parseCookiePairs(cookie)
         val envPath = try {
             writeCookieEnvFile(target, pairs)
@@ -2242,11 +2294,25 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         if (envPath != null && pairs.isNotEmpty()) {
             val host = runCatching { java.net.URI(target).host }.getOrNull() ?: "site"
             sb.appendLine("  ${pairs.size} cookie(s) exported → $envPath")
-            sb.appendLine("  Arm periodic pings (every ${intervalMin}m × $fires). Each fire reports an HTTP code; a non-200 means the session expired — re-login, then re-run get_cookies and keep_alive to refresh:")
+            val shell = buildKeepAliveShell(envPath, target, probeUrl, probeExpect)
+            val watchTarget = if (probeUrl != null) "login probe ($probeUrl)" else target
+            sb.appendLine(
+                "  Arm the watch (every ${intervalMin}m × $fires; watches $watchTarget). " +
+                    "A SESSION-DEAD line means the login expired — re-login, then re-run keep_alive to refresh:",
+            )
             sb.append(
-                "minis-scheduled create --label 'keep-alive $host' --interval ${intervalMin}m --count $fires --command-timeout 2m " +
-                    "--prompt 'keep-alive $host：看下面的 HTTP 状态码；不是 200 就说明会话可能过期，提醒用户重新登录' " +
-                    "--command '. $envPath && curl -s -o /dev/null -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $target'",
+                buildString {
+                    append("minis-scheduled create --label 'keep-alive ")
+                    append(host)
+                    append("' --interval ")
+                    append(intervalMin)
+                    append("m --count ")
+                    append(fires)
+                    append(" --command-timeout 2m --prompt ")
+                    append(poolShQuote("keep-alive $host：若输出含 SESSION-DEAD，马上提醒用户会话已失效、需要重新登录（附当前时间）"))
+                    append(" --command ")
+                    append(poolShQuote(shell))
+                },
             )
         } else {
             sb.appendLine("  (cookie export unavailable — the scheduled ping command was not composed)")
@@ -2260,6 +2326,80 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             val t = part.trim()
             val eq = t.indexOf('=')
             if (eq <= 0) null else t.substring(0, eq) to t.substring(eq + 1)
+        }
+    }
+
+    /**
+     * [T-android-keepalive-probe-2026-10] Minimal native GET with jar cookies;
+     * returns (status, bodySnippet). Used by the keep-alive login probe.
+     */
+    private fun kxHttpGet(url: String, ua: String?, cookie: String?, wantBody: Boolean): Pair<Int, String>? {
+        return try {
+            val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+            try {
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 15_000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("Accept", "*/*")
+                if (!ua.isNullOrEmpty()) conn.setRequestProperty("User-Agent", ua)
+                if (!cookie.isNullOrEmpty()) conn.setRequestProperty("Cookie", cookie)
+                val code = conn.responseCode
+                var body = ""
+                if (wantBody || code >= 400) {
+                    try {
+                        val stream = if (code >= 400) conn.errorStream else conn.inputStream
+                        if (stream != null) {
+                            val bytes = stream.use { s ->
+                                val buf = java.io.ByteArrayOutputStream()
+                                val chunk = ByteArray(8192)
+                                var n = s.read(chunk)
+                                while (n > 0 && buf.size() < 65536) {
+                                    buf.write(chunk, 0, n)
+                                    n = s.read(chunk)
+                                }
+                                buf.toByteArray()
+                            }
+                            body = String(bytes, Charsets.UTF_8)
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                code to body
+            } finally {
+                conn.disconnect()
+            }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * [T-android-keepalive-probe-2026-10] Shell body for the armed watch —
+     * prints "keep-alive OK" / "SESSION-DEAD …" so the fired turn can alert on
+     * a dead session without reading raw numbers.
+     */
+    private fun buildKeepAliveShell(
+        envPath: String,
+        watchUrl: String,
+        probeUrl: String?,
+        probeExpect: String?,
+    ): String {
+        if (probeUrl == null) {
+            return ". $envPath && curl -s -o /dev/null -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $watchUrl"
+        }
+        val tmp = "/tmp/ka-probe-\$\$"
+        val expectIsStatus = probeExpect != null && probeExpect.length == 3 && probeExpect.all { it.isDigit() }
+        val fetch = ". $envPath && code=\$(curl -s -o $tmp -w \"%{http_code}\" -H \"Cookie: \$MINIS_COOKIE_HEADER\" $probeUrl)"
+        return when {
+            expectIsStatus ->
+                "$fetch; if [ \"\$code\" = \"$probeExpect\" ]; then echo \"keep-alive OK (http=\$code)\"; " +
+                    "else echo \"SESSION-DEAD (http=\$code) — 会话已失效，需重新登录\"; fi"
+            !probeExpect.isNullOrBlank() ->
+                "$fetch; if grep -qF -- '$probeExpect' $tmp 2>/dev/null; then echo \"keep-alive OK (http=\$code)\"; " +
+                    "else echo \"SESSION-DEAD (http=\$code, keyword missing) — 会话已失效，需重新登录\"; fi"
+            else ->
+                "$fetch; if [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then echo \"keep-alive OK (http=\$code)\"; " +
+                    "else echo \"SESSION-DEAD (http=\$code) — 会话已失效，需重新登录\"; fi"
         }
     }
 
@@ -2354,7 +2494,11 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         return try {
             val u = android.net.Uri.parse(url)
             val scheme = u.scheme?.lowercase() ?: return null
-            if (scheme != "http" && scheme != "https") return null
+            // [T-android-viewport-memory-minis-2026-10] minis:// preview pages
+            // get the same per-origin viewport memory as the web (field
+            // report: a local page preview fell back to ~1280 and the shot had
+            // a blank strip on the right).
+            if (scheme != "http" && scheme != "https" && scheme != "minis") return null
             val host = u.host?.lowercase() ?: return null
             val port = if (u.port > 0) ":" + u.port else ""
             scheme + "://" + host + port
