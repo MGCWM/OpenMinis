@@ -484,6 +484,18 @@ object BrowserUseJS {
                   changed = true;
                   continue;
                 }
+                // Desktop-breakpoint pages (e.g. xiaohongshu creator login,
+                // .login-container{min-width:1024px}) are UNREADABLE at phone
+                // width unless the user can zoom OUT past minimum-scale=1 to
+                // fit. Clamp the floor to 0.2 instead of honouring 1.
+                if (k === 'minimum-scale') {
+                  var mf = parseFloat(v);
+                  if (isFinite(mf) && mf > 0.2) {
+                    changed = true;
+                    out.push('minimum-scale=0.2');
+                    continue;
+                  }
+                }
                 out.push(p);
               }
               if (changed) {
