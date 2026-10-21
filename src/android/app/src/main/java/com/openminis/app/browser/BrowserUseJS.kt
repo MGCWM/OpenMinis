@@ -516,8 +516,70 @@ object BrowserUseJS {
             } catch (_) {}
           }
           window.__minis_vp_fix_all = function () { scan(document); };
+          // [T-android-browser-user-zoom-2026-10] xiaohongshu and friends set
+          // `html,body{touch-action:none}` — that disables the pinch gesture at
+          // the hit-test layer, ABOVE the viewport meta and the WebView zoom
+          // settings, which is why a page can still refuse pinch after every
+          // meta fix. A resident !important rule re-enables panning + pinch;
+          // a MutationObserver keeps it alive against page rewrites (our own
+          // style element being removed or its sheet mutated).
+          function installTouchActionOverride() {
+            try {
+              // touch-action is an INTERSECTION-cascading property: the hit
+              // rules are combined, and `none` intersected with ANYTHING is
+              // still blocked — so overriding with a stronger !important rule
+              // does nothing while the page's `html,body{touch-action:none}`
+              // (xiaohongshu) stays in force. The only fix is to REWRITE that
+              // rule's own declaration. Walk every reachable sheet (CORS
+              // sheets throw on cssRules and are skipped) and neutralize any
+              // touch-action rule that matches html/body. Note Chromium
+              // serializes 'pan-x pan-y pinch-zoom' AS 'manipulation' — that
+              // display is correct and functional, not a failure.
+              for (var si = 0; si < document.styleSheets.length; si++) {
+                var sheet = document.styleSheets[si];
+                var rules;
+                try { rules = sheet.cssRules; } catch (_) { continue; }
+                if (!rules) continue;
+                for (var ri = 0; ri < rules.length; ri++) {
+                  var rule = rules[ri];
+                  var sel = '';
+                  try { sel = rule.selectorText || ''; } catch (_) { continue; }
+                  if (!sel) continue;
+                  var matchesRoot = false;
+                  try { matchesRoot = document.documentElement.matches(sel) || document.body.matches(sel); } catch (_) { continue; }
+                  if (!matchesRoot) continue;
+                  try {
+                    var cur = rule.style ? rule.style.getPropertyValue('touch-action') : '';
+                    if (cur && cur.trim() !== 'auto' &&
+                        cur.indexOf('pinch-zoom') < 0 && cur.indexOf('manipulation') < 0) {
+                      rule.style.setProperty('touch-action', 'pan-x pan-y pinch-zoom', 'important');
+                    }
+                  } catch (_) {}
+                }
+              }
+              // Inline declarations: an inline !important beats every sheet, so
+              // a page writing style.touchAction='none' must be stripped.
+              ['documentElement', 'body'].forEach(function (prop) {
+                var el = document[prop];
+                if (el && el.style && el.style.touchAction) {
+                  try { el.style.removeProperty('touch-action'); } catch (_) { try { el.style.touchAction = ''; } catch (_) {} }
+                }
+              });
+            } catch (_) {}
+          }
+          function armTouchActionGuard() {
+            try {
+              var mo2 = new MutationObserver(function () { installTouchActionOverride(); });
+              mo2.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
+              if (document.head) {
+                mo2.observe(document.head, { childList: true, subtree: true });
+              }
+            } catch (_) {}
+          }
           function watch() {
             scan(document);
+            installTouchActionOverride();
+            armTouchActionGuard();
             try {
               var mo = new MutationObserver(function (muts) {
                 for (var i = 0; i < muts.length; i++) {
@@ -552,10 +614,10 @@ object BrowserUseJS {
           // Belt-and-braces: the poisoning script can run at any hydration
           // moment — poll fast for the first 5s, then slowly for another 15s.
           try {
-            var fast = setInterval(function () { scan(document); }, 60);
+            var fast = setInterval(function () { scan(document); installTouchActionOverride(); }, 60);
             setTimeout(function () {
               clearInterval(fast);
-              var slow = setInterval(function () { scan(document); }, 500);
+              var slow = setInterval(function () { scan(document); installTouchActionOverride(); }, 500);
               setTimeout(function () { clearInterval(slow); }, 15000);
             }, 5000);
           } catch (_) {}
