@@ -467,6 +467,23 @@ object BrowserUseJS {
                   if (k === 'initial-scale') out.push('initial-scale=1');
                   continue;
                 }
+                // [T-android-browser-user-zoom-2026-10] Pages that lock the
+                // viewport (user-scalable=no / maximum-scale) block pinch —
+                // WebView honours them even when built-in zoom is enabled.
+                // Mirror Chrome's accessibility behaviour: drop maximum-scale
+                // and un-lock user-scalable; minimum-scale stays respected.
+                if (k === 'user-scalable') {
+                  var uv = v.toLowerCase();
+                  if (uv === 'no' || uv === 'false' || uv === '0') {
+                    changed = true;
+                    out.push('user-scalable=yes');
+                    continue;
+                  }
+                }
+                if (k === 'maximum-scale') {
+                  changed = true;
+                  continue;
+                }
                 out.push(p);
               }
               if (changed) {

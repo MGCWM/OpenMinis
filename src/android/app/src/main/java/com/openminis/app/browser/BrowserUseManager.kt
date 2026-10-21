@@ -139,7 +139,14 @@ class BrowserUseManager(
                 databaseEnabled = true
                 loadWithOverviewMode = true
                 useWideViewPort = true
-                builtInZoomControls = false
+                // [T-android-browser-user-zoom-2026-10] Users couldn't pinch-
+                // zoom the browser panel: builtInZoomControls=false disables
+                // the pinch gesture wholesale (the old comment in
+                // applyShrinkToFit assumed the opposite — it was wrong).
+                // Support zoom on, built-in pinch on, on-screen buttons off.
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
                 setSupportMultipleWindows(true)
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 val ua = customUA ?: profile.userAgentString
