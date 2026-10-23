@@ -9146,7 +9146,10 @@ class ChatViewModel(
             )
             viewModelScope.launch {
                 _fullHistoryPending.filter { !it }.first()
-                val parked = _pendingSendText.getAndSet(null)
+                // MutableStateFlow has no getAndSet (that's AtomicReference);
+                // plain read-then-clear is fine — only this coroutine writes.
+                val parked = _pendingSendText.value
+                _pendingSendText.value = null
                 if (parked != null) {
                     sendMessage(parked, skipContextCheck = false, headless = false)
                 }
