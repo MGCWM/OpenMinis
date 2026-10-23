@@ -80,6 +80,8 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -561,6 +563,16 @@ class ChatViewModel(
          * snapshots and the existing flat/stream pipeline is untouched.
          */
         const val LONG_SESSION_THRESHOLD: Int = 300
+
+        /**
+         * [T-android-fast-session-open-2026-10] Sessions above this many rows
+         * open via the tail-window fast path (screen paints immediately); the
+         * full history backfills in the background.
+         */
+        const val FAST_OPEN_THRESHOLD: Int = 400
+
+        /** How many newest rows the fast path loads for the first paint. */
+        const val FAST_OPEN_TAIL: Int = 220
         // T258: tool block statuses with no committed tool_result. retryLast()
         // drops blocks in any of these states because they would orphan the
         // assistant tool_use entry on retry (the API rejects unmatched
@@ -708,6 +720,19 @@ class ChatViewModel(
     // Reset on session load (different sessionId) is wired in loadSession.
 
     private val _visibleMessageCap = MutableStateFlow(INITIAL_VISIBLE_MESSAGE_CAP)
+
+    /**
+     * [T-android-fast-session-open-2026-10] True between "the tail window is
+     * on screen" and "the FULL history finished loading in the background".
+     * A send that lands in this window waits (below) — the model must see
+     * the whole agentHistory, not just the tail.
+     */
+    private val _fullHistoryPending = MutableStateFlow(false)
+    val fullHistoryPending: StateFlow<Boolean> = _fullHistoryPending.asStateFlow()
+
+    /** True once THIS session's full history has been loaded (fast-open only). */
+    @Volatile
+    private var loadedFullFromDb = false
     /**
      * Current tail cap. Reflective via [uiMessages]; bump with
      * [loadOlderMessages] when the user scrolls past the windowed top.
@@ -6362,9 +6387,27 @@ class ChatViewModel(
                 val transformMs: Long,
             )
             com.openminis.app.diagnostics.PerfLongCtx.step(sessionId, "db.query.begin")
+            // [T-android-fast-session-open-2026-10] Big sessions (1000+ rows)
+            // blocked entry for seconds: the full DB read + two partsJson
+            // parses per row ran before ANY message reached the screen, even
+            // though the UI only shows a 200-message tail window. Load the
+            // TAIL first (count query + one page), paint it, and backfill the
+            // full history in the background; a send in between waits on
+            // [fullHistoryPending].
+            val totalRows = chatRepository.dao.messageCountForSession(sessionId)
+            val fastOpen = totalRows > FAST_OPEN_THRESHOLD && !loadedFullFromDb
+            val tailRows = if (fastOpen) {
+                chatRepository.dao.loadMessagesPage(
+                    sessionId,
+                    (totalRows - FAST_OPEN_TAIL).coerceAtLeast(0),
+                    FAST_OPEN_TAIL,
+                )
+            } else {
+                null
+            }
             val loaded = withContext(Dispatchers.IO) {
                 val tIoBeforeLoad = System.currentTimeMillis()
-                val rows = chatRepository.loadMessages(sessionId)
+                val rows = tailRows ?: chatRepository.loadMessages(sessionId)
                 val tIoAfterLoad = System.currentTimeMillis()
                 com.openminis.app.diagnostics.PerfLongCtx.step(
                     sessionId,
@@ -6585,6 +6628,45 @@ class ChatViewModel(
                     }
                 }
                 applyCompactMarkerGraying(ordered, marker, loaded.messages, historyDbIds)
+            }
+
+            // [T-android-fast-session-open-2026-10] The tail window is on
+            // screen — now backfill the FULL history off the critical path.
+            // Everything below the send gate can proceed with the tail; the
+            // gate itself (sendMessage) waits on fullHistoryPending.
+            if (fastOpen) {
+                _fullHistoryPending.value = true
+                val sessionIdCapture = sessionId
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        val fullRows = chatRepository.loadMessages(sessionIdCapture)
+                        val chatUi = fullRows.toChatMessages()
+                        val llm = ArrayList<LLMMessage>(fullRows.size)
+                        for (entity in fullRows) {
+                            if (ChatRepository.isEmptyAssistantCarrier(entity.role, entity.partsJson)) continue
+                            llm.add(entity.toLLMMessage())
+                        }
+                        withContext(Dispatchers.Main) {
+                            loadedFullFromDb = true
+                            _messages.value = chatUi
+                            // Re-apply compact graying with the full row set.
+                            _cachedLatestMarker?.let { marker ->
+                                val historyDbIds: Set<String> = buildSet {
+                                    for (m in llm) {
+                                        m.dbMessageId?.takeIf { it.isNotEmpty() }?.let { add(it) }
+                                    }
+                                }
+                                _messages.value = applyCompactMarkerGraying(chatUi, marker, fullRows, historyDbIds)
+                            }
+                            agentHistory.clear()
+                            agentHistory.addAll(llm)
+                        }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "fast-open backfill failed: ${t.message}")
+                    } finally {
+                        _fullHistoryPending.value = false
+                    }
+                }
             }
 
             // Cold-start interrupt detection: an agent loop that was killed by
@@ -9052,8 +9134,29 @@ class ChatViewModel(
         // [T-android-stop-sibling-subagent] New work in this session lifts the
         // stop: delegations from here on may drive the turn again.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
+        // [T-android-fast-session-open-2026-10] A fast-opened big session is
+        // still backfilling its full history; sending now would hand the model
+        // a truncated past. Park the prompt — it fires the moment the
+        // backfill lands (usually a second or two).
+        if (_fullHistoryPending.value) {
+            _pendingSendText.value = text
+            appendSystemInfo(
+                text = "正在载入完整会话历史，这条消息已排队，载入完成即自动发送。",
+                iconKind = "info",
+            )
+            viewModelScope.launch {
+                _fullHistoryPending.filter { !it }.first()
+                val parked = _pendingSendText.getAndSet(null)
+                if (parked != null) {
+                    sendMessage(parked, skipContextCheck = false, headless = false)
+                }
+            }
+            return
+        }
         sendMessage(text, skipContextCheck = false, headless = false)
     }
+
+    private val _pendingSendText = MutableStateFlow<String?>(null)
 
     /**
      * [T-android-submit-outcome] What happened to a prompt handed to the send
