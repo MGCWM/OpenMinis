@@ -9134,32 +9134,43 @@ class ChatViewModel(
         // [T-android-stop-sibling-subagent] New work in this session lifts the
         // stop: delegations from here on may drive the turn again.
         com.openminis.app.agent.jobs.AgentJobRegistry.clearDelegationMute(activeSessionId)
-        // [T-android-fast-session-open-2026-10] A fast-opened big session is
-        // still backfilling its full history; sending now would hand the model
-        // a truncated past. Park the prompt — it fires the moment the
-        // backfill lands (usually a second or two).
-        if (_fullHistoryPending.value) {
-            _pendingSendText.value = text
-            appendSystemInfo(
-                text = "正在载入完整会话历史，这条消息已排队，载入完成即自动发送。",
-                iconKind = "info",
-            )
-            viewModelScope.launch {
-                _fullHistoryPending.filter { !it }.first()
-                // MutableStateFlow has no getAndSet (that's AtomicReference);
-                // plain read-then-clear is fine — only this coroutine writes.
-                val parked = _pendingSendText.value
-                _pendingSendText.value = null
-                if (parked != null) {
-                    sendMessage(parked, skipContextCheck = false, headless = false)
-                }
-            }
-            return
-        }
+        if (parkIfFullHistoryPending(text, headless = false) { t ->
+                sendMessage(t, skipContextCheck = false, headless = false)
+            }) return
         sendMessage(text, skipContextCheck = false, headless = false)
     }
 
     private val _pendingSendText = MutableStateFlow<String?>(null)
+
+    /**
+     * [T-android-fast-session-open-2026-10] The send gate shared by EVERY
+     * entry into the send funnel. A fast-opened big session is still
+     * backfilling its full history; sending now would hand the model a
+     * truncated past. Parks the prompt (visible note in the UI) and
+     * auto-fires through [resume] once the backfill lands. Returns true when
+     * the caller must stop (the prompt was parked).
+     */
+    private fun parkIfFullHistoryPending(text: String, headless: Boolean, resume: (String) -> Unit): Boolean {
+        if (!_fullHistoryPending.value) return false
+        _pendingSendText.value = text
+        _pendingSendHeadlessFastOpen.value = headless
+        if (!headless) {
+            appendSystemInfo(
+                text = "正在载入完整会话历史，这条消息已排队，载入完成即自动发送。",
+                iconKind = "info",
+            )
+        }
+        viewModelScope.launch {
+            _fullHistoryPending.filter { !it }.first()
+            val parked = _pendingSendText.value
+            _pendingSendText.value = null
+            _pendingSendHeadlessFastOpen.value = false
+            if (parked != null) resume(parked)
+        }
+        return true
+    }
+
+    private val _pendingSendHeadlessFastOpen = MutableStateFlow(false)
 
     /**
      * [T-android-submit-outcome] What happened to a prompt handed to the send
@@ -9199,8 +9210,18 @@ class ChatViewModel(
         // [T-scheduled-tool-prefill] Tool calls executed as the loop's first
         // turn, before any model request (a scheduled task's prefilled call).
         prefill: List<com.openminis.app.scheduled.PrefilledToolCall> = emptyList(),
-    ): SubmitOutcome =
-        sendMessage(text, skipContextCheck = false, headless = true, prefill = prefill)
+    ): SubmitOutcome {
+        // [T-android-fast-session-open-2026-10] Scheduled/headless fires land
+        // here WITHOUT passing the public sendMessage — they must not slip a
+        // truncated history to the model either. Park and answer Queued; the
+        // parked prompt resumes through the gate when the backfill lands.
+        if (parkIfFullHistoryPending(text, headless = true) { t ->
+                sendMessage(t, skipContextCheck = false, headless = true, prefill = prefill)
+            }) {
+            return SubmitOutcome.Queued
+        }
+        return sendMessage(text, skipContextCheck = false, headless = true, prefill = prefill)
+    }
 
     /**
      * @param skipContextCheck set by the pre-send context dialog's own actions,
