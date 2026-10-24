@@ -1080,7 +1080,25 @@ class BrowserUseManager(
             BrowserAction.GET_TEXT -> return getText(input.selector)
             BrowserAction.SCROLL -> scroll(input.selector, input.direction, input.amount)
             BrowserAction.GET_PAGE_INFO -> return getPageInfo()
-            BrowserAction.EXECUTE_JS -> return executeJS(input.script, input.timeoutMs)
+            BrowserAction.EXECUTE_JS -> {
+                // [T-android-execjs-scriptfile-2026-10] Long scripts can be
+                // truncated in the tool-argument transport (\\u-escape-dense
+                // payloads are the worst case — the whole argument stream dies
+                // and the tool layer reports "unknown action"). script_file
+                // reads the body from disk instead.
+                val body = if (!input.scriptFile.isNullOrBlank()) {
+                    val (file, err) = resolveScriptFile(input.scriptFile!!)
+                    if (file == null) return BrowserActionResult.error("script_file: $err")
+                    try {
+                        file.readText(Charsets.UTF_8)
+                    } catch (t: Throwable) {
+                        return BrowserActionResult.error("script_file: read failed — ${t.message}")
+                    }
+                } else {
+                    input.script
+                }
+                return executeJS(body, input.timeoutMs)
+            }
             BrowserAction.FIND_ELEMENTS -> return findElements(input.selector)
             BrowserAction.HOVER -> hover(input.selector)
             BrowserAction.GET_READABLE -> return getReadable()
@@ -1140,7 +1158,8 @@ class BrowserUseManager(
             BrowserAction.RESTORE_TABS ->
                 return BrowserActionResult.error("Tab management actions must be routed through BrowserTabPool")
             BrowserAction.RECORD_START, BrowserAction.RECORD_STOP, BrowserAction.RUN_MACRO,
-            BrowserAction.LIST_MACROS, BrowserAction.KEEP_ALIVE, BrowserAction.EXPORT_MACRO ->
+            BrowserAction.LIST_MACROS, BrowserAction.KEEP_ALIVE, BrowserAction.EXPORT_MACRO,
+            BrowserAction.HOLD_TAB ->
                 return BrowserActionResult.error("Macro + keep-alive actions must be routed through BrowserTabPool")
         }
 
@@ -2727,6 +2746,36 @@ class BrowserUseManager(
     }
 
     // -- Execute JS --
+
+    /**
+     * [T-android-execjs-scriptfile-2026-10] Resolve a guest path (e.g.
+     * /var/minis/workspace/big.js) to a host File, using the same rules as
+     * upload_file. Returns null (with the reason) when unresolvable.
+     */
+    private fun resolveScriptFile(raw: String): Pair<File?, String?> {
+        val ctx = appContext ?: return null to "no session context for path resolution"
+        val sid = sessionIdProvider()
+        val path = raw.trim()
+        if (path.isEmpty()) return null to "empty path"
+        fun sessionDir(kind: String): File? =
+            sid?.let { com.openminis.app.sandbox.SessionMounts.sessionDir(ctx.filesDir, it, kind) }
+        val file: File? = when {
+            path.startsWith("/var/minis/workspace/") ->
+                sessionDir("workspace")?.let { File(it, path.removePrefix("/var/minis/workspace/")) }
+            path.startsWith("/var/minis/attachments/") ->
+                sessionDir("attachments")?.let { File(it, path.removePrefix("/var/minis/attachments/")) }
+            path.startsWith("/var/minis/shared/") ->
+                File(File(ctx.filesDir, "minis-global/shared"), path.removePrefix("/var/minis/shared/"))
+            path.startsWith("/") -> null
+            else -> sessionDir("workspace")?.let { File(it, path) }
+        }
+        if (file == null) {
+            return null to "path not under /var/minis/{workspace,attachments,shared} (got: $path)"
+        }
+        if (!file.isFile) return null to "file not found: $path"
+        if (file.length() > 2L * 1024 * 1024) return null to "script file too large (${file.length()} B, cap 2MB)"
+        return file to null
+    }
 
     private suspend fun executeJS(script: String?, timeoutSec: Int?): BrowserActionResult {
         if (script.isNullOrEmpty()) return BrowserActionResult.error("execute_js requires 'script'")

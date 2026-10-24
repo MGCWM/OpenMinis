@@ -442,6 +442,7 @@ class BrowserUseOffloadHandler(private val app: MinisApp) : NativeOffloadHandler
             "list_macros"        -> "browser: list macros"
             "keep_alive"         -> "browser: keep-alive"
             "export_macro"       -> "browser: export macro"
+            "hold_tab"           -> "browser: hold tab"
             "find"               -> "browser: find ${txt ?: sel ?: ""}".trim()
             else                 -> "browser: $action"
         }

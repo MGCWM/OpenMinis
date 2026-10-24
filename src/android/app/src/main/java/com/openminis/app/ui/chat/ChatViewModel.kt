@@ -14528,7 +14528,18 @@ class ChatViewModel(
     private suspend fun executeBrowserUseTool(argsJson: String): ToolExecutionResult {
         val input = BrowserActionInput.parse(argsJson)
             ?: return ToolExecutionResult(
-                "Error: Invalid browser_use input — " + com.openminis.app.browser.BrowserActionInput.diagnose(argsJson),
+                "Error: Invalid browser_use input — " +
+                    // [T-android-execjs-scriptfile-2026-10] A truncated argument
+                    // stream (long \\u-escape-dense scripts) reaches here as a
+                    // mangled payload; name the transport cause and the fix.
+                    (if (argsJson.contains("\\u") && argsJson.length > 1500) {
+                        "this looks like a TRANSPORT-TRUNCATED long script (" + argsJson.length +
+                            " chars, \\u-escape-dense). Write the script to a file and pass " +
+                            "script_file=/var/minis/workspace/<name>.js instead. — " +
+                            com.openminis.app.browser.BrowserActionInput.diagnose(argsJson)
+                    } else {
+                        com.openminis.app.browser.BrowserActionInput.diagnose(argsJson)
+                    }),
                 false,
             )
 

@@ -153,6 +153,12 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
          * since it's transient scheduling state, not tab identity.
          */
         var inUseGraceJob: Job? = null,
+        /**
+         * [T-android-hold-tab-2026-10] Until this timestamp the tab is exempt
+         * from idle-timeout / registry / memory-pressure eviction — a login
+         * flow (SMS code → submit) must not lose its tab mid-way.
+         */
+        var holdUntil: Long = 0L,
     )
 
     private val _tabs = MutableStateFlow<List<Tab>>(emptyList())
@@ -237,6 +243,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
      * only list_tabs revealed it. Drained onto the next action result.
      */
     private val poolNotices = ArrayDeque<String>()
+
+    /** [T-android-hold-tab-2026-10] True while the tab is explicitly held. */
+    private fun isHeld(tab: Tab): Boolean = tab.holdUntil > System.currentTimeMillis()
 
     private fun postPoolNotice(line: String) {
         poolNotices.addLast(line)
@@ -830,6 +839,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             BrowserAction.LIST_MACROS -> listMacros()
             BrowserAction.KEEP_ALIVE -> keepAlive(input)
             BrowserAction.EXPORT_MACRO -> exportMacro(input)
+            BrowserAction.HOLD_TAB -> holdTab(input)
             else -> {
                 ownershipViolation(input.tabId)?.let { return it }
                 // [T-browser-use-per-tab-serial-android] Serialize per explicit
@@ -1777,7 +1787,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         val now = System.currentTimeMillis()
         val currentTabs = _tabs.value.toMutableList()
         val timeoutMs = idleTimeoutMs
-        val toRemove = currentTabs.filter { !it.inUse && (now - it.lastActivityDate.time) >= timeoutMs }
+        val toRemove = currentTabs.filter {
+            !it.inUse && !isHeld(it) && (now - it.lastActivityDate.time) >= timeoutMs
+        }
         for (tab in toRemove) {
             val url = tab.manager.currentURL.value
             if (url.isNotEmpty()) savedURLs[tab.id] = url
@@ -1789,6 +1801,9 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
             )
             Log.i(TAG, "Evicted idle tab ${tab.id}")
         }
+        // [T-android-hold-tab-2026-10] Held tabs whose hold expired keep their
+        // lastActivityDate; they become evictable on the NEXT sweep, which is
+        // the intended "hold for N minutes, then normal rules" semantics.
         if (toRemove.isNotEmpty()) {
             _tabs.value = currentTabs
             if (currentTabs.isNotEmpty() && currentTabs.none { it.id == _selectedTabId.value }) {
@@ -1882,6 +1897,8 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         // Preempting something the registry believed was free would break the
         // "idle first" guarantee silently, so decline instead.
         if (tab.inUse) return
+        // [T-android-hold-tab-2026-10] Explicitly held tabs are not idle.
+        if (isHeld(tab)) return
         val url = tab.manager.currentURL.value
         if (url.isNotEmpty()) savedURLs[id] = url
         currentTabs.removeAt(idx)
@@ -1914,7 +1931,7 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
 
     override fun evictAllIdleForMemoryPressure(): Int {
         val currentTabs = _tabs.value.toMutableList()
-        val toRemove = currentTabs.filter { !it.inUse }
+        val toRemove = currentTabs.filter { !it.inUse && !isHeld(it) }
         if (toRemove.isEmpty()) return 0
         for (tab in toRemove) {
             val url = tab.manager.currentURL.value
@@ -2058,6 +2075,25 @@ class BrowserTabPool(private val context: Context) : BrowserTabPoolRegistry.Regi
         BrowserActionResult(
             text = "Viewport set to ${w}x$h (session override" +
                 (if (origin != null) "; remembered for $origin — re-applies on revisit, survives restarts" else "") + ")",
+        )
+    }
+
+    /**
+     * [T-android-hold-tab-2026-10] Mark a tab exempt from eviction for
+     * hold_minutes (default 10, cap 120). Use around login flows: SMS code →
+     * submit must not lose its tab to the idle timeout / memory pressure.
+     */
+    private fun holdTab(input: BrowserActionInput): BrowserActionResult {
+        val minutes = (input.holdMinutes ?: 10).coerceIn(1, 120)
+        val tabId = input.tabId ?: _selectedTabId.value
+        val tab = _tabs.value.firstOrNull { it.id == tabId }
+            ?: return BrowserActionResult.error("hold_tab: tab $tabId not found (list_tabs shows ids)")
+        tab.holdUntil = System.currentTimeMillis() + minutes * 60_000L
+        postPoolNotice("Note: tab $tabId is held for ${minutes}min (no idle/memory eviction).")
+        return BrowserActionResult(
+            text = "Tab $tabId held for $minutes minute(s) — idle-timeout, registry and " +
+                "memory-pressure eviction all skip it. Finish the flow (e.g. login) and carry on; " +
+                "normal eviction rules resume when the hold expires.",
         )
     }
 

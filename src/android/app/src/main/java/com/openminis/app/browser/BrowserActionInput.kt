@@ -86,6 +86,15 @@ data class BrowserActionInput(
     /** get_network_log / get_response_log: page size. */
     val limit: Int? = null,
     /**
+     * [T-android-execjs-scriptfile-2026-10] execute_js: read the script from a
+     * guest file instead of the 'script' string. Long scripts (especially
+     * \u-escape-dense ones) can get truncated in the tool-argument transport;
+     * a file path bypasses that entirely.
+     */
+    val scriptFile: String? = null,
+    /** [T-android-hold-tab-2026-10] hold_tab: minutes to keep this tab exempt from idle/memory eviction. */
+    val holdMinutes: Int? = null,
+    /**
      * [T-android-keepalive-probe-2026-10] keep_alive: a secondary URL whose
      * response tells whether the login session is still valid (a page can
      * answer 200 while logged out).
@@ -237,6 +246,8 @@ data class BrowserActionInput(
                     limit = if (obj.has("limit")) obj.optInt("limit") else null,
                     probeUrl = obj.optString("probe_url").ifEmpty { null },
                     probeExpect = obj.optString("probe_expect").ifEmpty { null },
+                    scriptFile = obj.optString("script_file").ifEmpty { null },
+                    holdMinutes = if (obj.has("hold_minutes")) obj.optInt("hold_minutes") else null,
                 )
             } catch (_: Exception) {
                 null
